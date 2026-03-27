@@ -1,0 +1,225 @@
+@import url('https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@300;400;500;600;700&family=SF+Pro+Text:wght@300;400;500;600;700&display=swap');
+
+.chat-ui-root,
+.chat-ui-root * {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.chat-ui-root {
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Helvetica Neue', Arial,
+    sans-serif;
+  background-color: #000;
+  user-select: none;
+}
+
+.chat-ui-root .app-root {
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  max-width: 100%;
+}
+
+.chat-ui-root .main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #000;
+  position: relative;
+}
+
+.chat-ui-root .tab-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.chat-ui-root .screen-header {
+  padding: 8px 16px 8px;
+  background: #000;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
+.chat-ui-root .screen-header h1 {
+  color: #fff;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.chat-ui-root .header-top-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.chat-ui-root .header-actions {
+  display: flex;
+  gap: 20px;
+}
+
+.chat-ui-root .header-action-btn {
+  background: none;
+  border: none;
+  color: #0a7cff;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+}
+
+.chat-ui-root .search-bar {
+  display: flex;
+  align-items: center;
+  background: #1c1c1e;
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin: 10px 16px;
+  gap: 6px;
+}
+
+.chat-ui-root .search-bar svg {
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.chat-ui-root .search-bar input {
+  background: none;
+  border: none;
+  outline: none;
+  color: #fff;
+  font-size: 17px;
+  width: 100%;
+  padding: 0;
+}
+
+.chat-ui-root .search-bar input::placeholder {
+  color: #8e8e93;
+}
+
+.chat-ui-root .filter-pills {
+  display: flex;
+  gap: 8px;
+  padding: 6px 16px 8px;
+  overflow-x: auto;
+}
+
+.chat-ui-root .filter-pill {
+  padding: 6px 14px;
+  border-radius: 16px;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s;
+}
+
+.chat-ui-root .filter-pill.active {
+  background: #0a7cff;
+  color: #fff;
+}
+
+.chat-ui-root .filter-pill:not(.active) {
+  background: #2c2c2e;
+  color: #fff;
+}
+
+.chat-ui-root ::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-ui-root input,
+.chat-ui-root textarea {
+  font-family: inherit;
+}
+
+@supports (padding-top: env(safe-area-inset-top)) {
+  .chat-ui-root .app-root {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+  }
+
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideOutRight {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(100%);
+  }
+
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}

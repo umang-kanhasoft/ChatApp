@@ -1,0 +1,51 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo_data:/data/db
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+
+  server:
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.server
+    restart: unless-stopped
+    depends_on:
+      - mongo
+      - redis
+    ports:
+      - '5000:5000'
+    env_file:
+      - ../../server/.env
+    volumes:
+      - ../../server:/app
+      - /app/node_modules
+
+  client:
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.client
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - '5173:5173'
+    env_file:
+      - ../../client/.env
+    volumes:
+      - ../../client:/app
+      - /app/node_modules
+
+volumes:
+  mongo_data:
+  redis_data:

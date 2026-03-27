@@ -1,0 +1,38 @@
+FROM node:20-alpine AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY server/package.json ./server/package.json
+COPY client/package.json ./client/package.json
+COPY shared/package.json ./shared/package.json
+
+RUN npm ci
+
+COPY server ./server
+COPY shared ./shared
+
+RUN npm --workspace server run build
+
+FROM node:20-alpine AS runtime
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json ./
+COPY server/package.json ./server/package.json
+COPY client/package.json ./client/package.json
+COPY shared/package.json ./shared/package.json
+
+RUN npm ci --omit=dev --workspace server --include-workspace-root=false && npm cache clean --force
+
+COPY --from=build /app/server/dist ./server/dist
+
+WORKDIR /app/server
+
+USER node
+
+EXPOSE 5000
+
+CMD ["node", "dist/server.js"]

@@ -1,0 +1,53 @@
+{
+  "name": "chatapp",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "client",
+    "server",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "npm --workspace server run dev",
+    "dev:client": "npm --workspace client run dev",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "npm --workspace server run build",
+    "build:client": "npm --workspace client run build",
+    "lint": "npm run lint:server && npm run lint:client",
+    "lint:server": "npm --workspace server run lint",
+    "lint:client": "npm --workspace client run lint",
+    "test": "npm run test:server && npm run test:client",
+    "test:server": "npm --workspace server run test",
+    "test:client": "npm --workspace client run test",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "prettier": "^3.3.3"
+  },
+  "overrides": {
+    "socket.io-parser": "^4.2.6",
+    "flatted": "^3.4.2",
+    "yaml": "^2.8.3",
+    "anymatch": {
+      "picomatch": "^2.3.2"
+    },
+    "readdirp": {
+      "picomatch": "^2.3.2"
+    },
+    "micromatch": {
+      "picomatch": "^2.3.2"
+    },
+    "tinyglobby": {
+      "picomatch": "^4.0.4"
+    },
+    "fdir": {
+      "picomatch": "^4.0.4"
+    }
+  },
+  "engines": {
+    "node": ">=20.19.0",
+    "npm": ">=10.0.0"
+  }
+}

@@ -1,0 +1,30 @@
+# Node
+node_modules/
+**/node_modules/
+
+# Build outputs
+dist/
+build/
+coverage/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Runtime uploads
+server/uploads/
+
+# Local DB/infra
+.mongo/
+.redis/
+Figma Docs/
