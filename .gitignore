@@ -28,3 +28,7 @@ server/uploads/
 .mongo/
 .redis/
 Figma Docs/
+artifacts
+e2e
+scripts
+uploads

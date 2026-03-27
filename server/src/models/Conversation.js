@@ -17,9 +17,22 @@ const participantSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    lastDeliveredMessage: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Message',
+      default: null,
+    },
+    lastDeliveredAt: {
+      type: Date,
+      default: null,
+    },
     lastReadMessage: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Message',
+      default: null,
+    },
+    lastReadAt: {
+      type: Date,
       default: null,
     },
     isMuted: {

@@ -1,4 +1,8 @@
-export default function SettingsTab({ currentUser, versionLabel = 'WhatsApp Clone v2.25.3' }) {
+export default function SettingsTab({
+  currentUser,
+  onLogout,
+  versionLabel = 'WhatsApp Clone v2.25.3',
+}) {
   const settingsSections = [
     {
       items: [
@@ -65,6 +69,11 @@ export default function SettingsTab({ currentUser, versionLabel = 'WhatsApp Clon
           ))}
         </div>
       ))}
+      <div style={styles.logoutSection}>
+        <button type="button" data-testid="logout-button" style={styles.logoutButton} onClick={() => onLogout?.()}>
+          Log Out
+        </button>
+      </div>
       <div style={styles.version}>
         <span style={styles.versionText}>{versionLabel}</span>
       </div>
@@ -101,6 +110,18 @@ const styles = {
     paddingBottom: 11,
   },
   settingsLabel: { color: '#fff', fontSize: 16 },
+  logoutSection: { padding: '24px 16px 0' },
+  logoutButton: {
+    width: '100%',
+    borderRadius: 18,
+    border: '1px solid rgba(255,255,255,0.14)',
+    background: '#1c1c1e',
+    color: '#ff6b5f',
+    fontSize: 16,
+    fontWeight: '600',
+    padding: '14px 18px',
+    cursor: 'pointer',
+  },
   version: { textAlign: 'center', padding: '24px 16px' },
   versionText: { color: '#8e8e93', fontSize: 13 },
 };

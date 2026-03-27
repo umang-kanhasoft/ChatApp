@@ -29,6 +29,12 @@ metadata:
 spec:
   replicas: 3
   revisionHistoryLimit: 3
+  minReadySeconds: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: chatapp-server
@@ -37,7 +43,23 @@ spec:
       labels:
         app: chatapp-server
     spec:
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 60
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: chatapp-server
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: chatapp-server
       containers:
         - name: server
           image: ghcr.io/your-org/chatapp-server:latest
@@ -45,6 +67,10 @@ spec:
           ports:
             - containerPort: 5000
               name: http
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 15"]
           env:
             - name: NODE_ENV
               value: production
@@ -66,7 +92,7 @@ spec:
           resources:
             requests:
               cpu: 500m
-              memory: 512Mi
+              memory: 768Mi
             limits:
               cpu: "2"
               memory: 2Gi
@@ -104,6 +130,23 @@ spec:
     name: chatapp-server
   minReplicas: 3
   maxReplicas: 30
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+        - type: Pods
+          value: 5
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 20
+          periodSeconds: 60
   metrics:
     - type: Resource
       resource:

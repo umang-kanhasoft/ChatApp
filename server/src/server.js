@@ -8,6 +8,7 @@ import { initializeQueueRuntime, shutdownQueueRuntime } from './queues/runtime.j
 import { createSocketServer } from './socket/index.js';
 import { startScheduledMessageScheduler } from './jobs/scheduledMessageScheduler.js';
 import { logger } from './utils/logger.js';
+import { markShuttingDown } from './utils/lifecycle.js';
 
 let isShuttingDown = false;
 
@@ -37,6 +38,7 @@ const bootstrap = async () => {
       return;
     }
     isShuttingDown = true;
+    markShuttingDown();
 
     logger.info('received shutdown signal, closing gracefully', { signal });
 
@@ -49,6 +51,7 @@ const bootstrap = async () => {
       await disconnectMongo();
       process.exit(0);
     });
+    httpServer.closeIdleConnections?.();
 
     setTimeout(() => {
       logger.error('forcefully terminating process after shutdown timeout');

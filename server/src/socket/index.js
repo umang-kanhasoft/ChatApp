@@ -5,6 +5,7 @@ import { createRedisDuplicate, getRedis } from '../config/redis.js';
 import { socketCorsOptions } from '../config/cors.js';
 import { User } from '../models/User.js';
 import { leaveUserFromAllActiveGroupCalls } from '../services/groupCallService.js';
+import { listUserConversationJoinRoomIds } from '../services/conversationService.js';
 import {
   heartbeatPresenceSocket,
   trackPresenceConnected,
@@ -12,28 +13,35 @@ import {
 } from '../services/presenceService.js';
 import { instanceId } from '../utils/instance.js';
 import { trackSocketConnected, trackSocketDisconnected, trackSocketEvent } from '../utils/metrics.js';
+import { isShuttingDown } from '../utils/lifecycle.js';
 import { logger } from '../utils/logger.js';
 import { socketAuth } from './middleware/socketAuth.js';
 import { registerChatHandlers } from './handlers/registerChatHandlers.js';
 
 const toStringId = (value) => String(value);
 
-const markUserOnline = async (userId) => {
+const persistUserLastSeen = async (userId, lastSeen = new Date()) => {
   await User.findByIdAndUpdate(userId, {
     $set: {
-      isOnline: true,
-      lastSeen: new Date(),
+      lastSeen,
     },
   });
 };
 
-const markUserOffline = async (userId) => {
-  await User.findByIdAndUpdate(userId, {
-    $set: {
-      isOnline: false,
-      lastSeen: new Date(),
-    },
-  });
+const broadcastPresenceUpdate = async ({ io, userId, isOnline, lastSeen }) => {
+  const roomIds = await listUserConversationJoinRoomIds({ userId });
+  const targetRooms = roomIds.map((conversationId) => `conversation:${conversationId}`);
+  const payload = {
+    userId,
+    isOnline,
+    lastSeen: lastSeen.toISOString(),
+  };
+
+  io.to(`user:${userId}`).emit('presence:update', payload);
+
+  if (targetRooms.length > 0) {
+    io.to(targetRooms).emit('presence:update', payload);
+  }
 };
 
 const attachRedisAdapter = async (io) => {
@@ -77,6 +85,9 @@ export const createSocketServer = async (httpServer) => {
       threshold: 1024,
     },
     maxHttpBufferSize: env.SOCKET_MAX_HTTP_BUFFER_SIZE,
+    allowRequest: (_req, callback) => {
+      callback(null, !isShuttingDown());
+    },
     connectionStateRecovery: {
       maxDisconnectionDuration: env.SOCKET_CONNECTION_RECOVERY_MS,
       skipMiddlewares: true,
@@ -121,11 +132,11 @@ export const createSocketServer = async (httpServer) => {
     });
 
     if (connectionState.becameOnline) {
-      await markUserOnline(userId);
-      io.emit('presence:update', {
+      await broadcastPresenceUpdate({
+        io,
         userId,
         isOnline: true,
-        lastSeen: new Date().toISOString(),
+        lastSeen: new Date(),
       });
     }
 
@@ -145,7 +156,17 @@ export const createSocketServer = async (httpServer) => {
         return;
       }
 
-      const updatedGroupSessions = await leaveUserFromAllActiveGroupCalls({ userId });
+      const offlineAt = new Date();
+
+      let updatedGroupSessions = [];
+      try {
+        updatedGroupSessions = await leaveUserFromAllActiveGroupCalls({ userId });
+      } catch (error) {
+        logger.warn('failed to remove user from active group calls during disconnect cleanup', {
+          userId,
+          error,
+        });
+      }
       for (const session of updatedGroupSessions) {
         const conversationId = toStringId(session.conversation?._id || session.conversation);
         const participants = (session.participants || []).map((entry) => {
@@ -176,11 +197,12 @@ export const createSocketServer = async (httpServer) => {
         }
       }
 
-      await markUserOffline(userId);
-      io.emit('presence:update', {
+      await persistUserLastSeen(userId, offlineAt);
+      await broadcastPresenceUpdate({
+        io,
         userId,
         isOnline: false,
-        lastSeen: new Date().toISOString(),
+        lastSeen: offlineAt,
       });
     });
   });

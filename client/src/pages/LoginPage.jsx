@@ -82,6 +82,7 @@ export default function LoginPage() {
     <div className="phone-login">
       <form
         className="phone-card"
+        data-testid="login-form"
         onSubmit={handleSubmit((values) => {
           const phoneWithDial = buildPhonePayload(values.phone, dialPlaceholder);
           if (!phoneWithDial) return;
@@ -94,6 +95,7 @@ export default function LoginPage() {
         <div className="country-select">
           <select
             value={selectedCountry.code}
+            data-testid="login-country-select"
             onChange={(event) => {
               const next = COUNTRY_LIST.find((c) => c.code === event.target.value);
               if (next) setSelectedCountry(next);
@@ -116,21 +118,24 @@ export default function LoginPage() {
             type="tel"
             className="phone-input"
             placeholder="your phone number"
+            data-testid="login-phone-input"
             {...register('phone')}
           />
         </label>
         {errors.phone ? <span className="error-text">{errors.phone.message}</span> : null}
 
-        <button type="submit" disabled={otpRequestMutation.isPending}>
+        <button type="submit" data-testid="login-submit" disabled={otpRequestMutation.isPending}>
           {otpRequestMutation.isPending ? 'Sending…' : 'Next'}
         </button>
 
         {emailWarning ? (
-          <p className="error-text">{emailWarning}</p>
+          <p className="error-text" data-testid="login-warning">{emailWarning}</p>
         ) : null}
 
         {otpRequestMutation.error ? (
-          <p className="error-text">{otpRequestMutation.error.response?.data?.error?.message || 'Login failed'}</p>
+          <p className="error-text" data-testid="login-error">
+            {otpRequestMutation.error.response?.data?.error?.message || 'Login failed'}
+          </p>
         ) : null}
 
 

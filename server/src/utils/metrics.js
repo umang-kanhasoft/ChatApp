@@ -36,6 +36,13 @@ const socketEventsTotal = new Counter({
   registers: [register],
 });
 
+const socketRateLimitedTotal = new Counter({
+  name: 'chatapp_socket_rate_limited_total',
+  help: 'Socket.IO events rejected by the rate limiter',
+  labelNames: ['event'],
+  registers: [register],
+});
+
 const queueDepth = new Gauge({
   name: 'chatapp_queue_depth',
   help: 'Current queue backlog by queue name',
@@ -106,6 +113,11 @@ export const trackSocketEvent = (direction, event) => {
     direction,
     event,
   });
+};
+
+export const trackSocketRateLimited = (event) => {
+  if (!env.METRICS_ENABLED) return;
+  socketRateLimitedTotal.inc({ event });
 };
 
 export const setQueueDepth = (queue, count) => {

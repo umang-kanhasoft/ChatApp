@@ -6,7 +6,8 @@ import ChatUiApp from '../chat-ui/App.jsx';
 import CallOverlay from '../chat-ui/components/CallOverlay.jsx';
 import GroupCallOverlay from '../chat-ui/components/GroupCallOverlay.jsx';
 import { useChatSocket } from '../hooks/useChatSocket.js';
-import { meApi } from '../services/authApi.js';
+import { isSessionInvalidError, refreshSession } from '../services/api.js';
+import { logoutApi, meApi } from '../services/authApi.js';
 import {
   createGroupConversationApi,
   createPrivateConversationApi,
@@ -23,7 +24,7 @@ import {
   uploadMediaApi,
 } from '../services/chatApi.js';
 import { getActiveGroupCallApi, listCallHistoryApi, listIceServersApi } from '../services/callApi.js';
-import { getSocket } from '../services/socket.js';
+import { emitSocketAck, getSocket } from '../services/socket.js';
 import {
   createStatusApi,
   listStatusFeedApi,
@@ -32,8 +33,10 @@ import {
 } from '../services/statusApi.js';
 import { useAuthStore } from '../store/authStore.js';
 import { createClientMessageId } from '../utils/ids.js';
+import { applyReceiptProgress, getReceiptSummary } from '../utils/messageReceipts.js';
 
 const toStringId = (value) => String(value ?? '');
+const PRIVATE_CALL_DISCONNECT_GRACE_MS = 8000;
 
 const getMessageConversationId = (message) =>
   typeof message?.conversation === 'string' ? message.conversation : message?.conversation?._id;
@@ -83,12 +86,6 @@ const dedupeMessages = (items) => {
   }
 
   return output;
-};
-
-const appendReceiptEntry = (entries = [], userId, at) => {
-  const exists = entries.some((entry) => toStringId(entry.user?._id || entry.user) === toStringId(userId));
-  if (exists) return entries;
-  return [...entries, { user: userId, at }];
 };
 
 const getInitials = (value) => {
@@ -193,9 +190,7 @@ const getMessageStatus = (message, currentUserId, participantCount) => {
   const senderId = toStringId(message.sender?._id || message.sender);
   if (senderId !== toStringId(currentUserId)) return '';
 
-  const peers = Math.max(participantCount - 1, 1);
-  const deliveredCount = (message.deliveredTo || []).length;
-  const readCount = (message.readBy || []).length;
+  const { deliveredCount, readCount, peers } = getReceiptSummary(message, participantCount);
 
   if (readCount - 1 >= peers) return 'read';
   if (deliveredCount - 1 >= peers) return 'delivered';
@@ -313,6 +308,14 @@ export default function ChatPage() {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const remoteAudioRef = useRef(null);
+  const activeCallIdRef = useRef('');
+  const incomingCallRef = useRef(null);
+  const callStateRef = useRef('idle');
+  const callPartnerIdRef = useRef('');
+  const callTypeRef = useRef('voice');
+  const callDisconnectTimerRef = useRef(null);
+  const privateCallBootstrapRef = useRef(false);
+  const sessionRestoreAttemptedRef = useRef(false);
   const callStartedAtRef = useRef(0);
   const pendingSignalsRef = useRef({});
   const groupLocalStreamRef = useRef(null);
@@ -351,11 +354,63 @@ export default function ChatPage() {
     file: null,
   });
 
+  useEffect(() => {
+    activeCallIdRef.current = activeCallId;
+  }, [activeCallId]);
+
+  useEffect(() => {
+    incomingCallRef.current = incomingCall;
+  }, [incomingCall]);
+
+  useEffect(() => {
+    callStateRef.current = callState;
+  }, [callState]);
+
+  useEffect(() => {
+    callPartnerIdRef.current = callPartnerId;
+  }, [callPartnerId]);
+
+  useEffect(() => {
+    callTypeRef.current = callType;
+  }, [callType]);
+
+  useEffect(() => {
+    if (accessToken) {
+      sessionRestoreAttemptedRef.current = false;
+      return;
+    }
+
+    if (!refreshToken || sessionRestoreAttemptedRef.current) {
+      return;
+    }
+
+    sessionRestoreAttemptedRef.current = true;
+    let cancelled = false;
+
+    void refreshSession().catch((error) => {
+      if (cancelled) return;
+
+      if (isSessionInvalidError(error)) {
+        queryClient.clear();
+        clearAuth();
+        navigate('/login', { replace: true });
+        return;
+      }
+
+      sessionRestoreAttemptedRef.current = false;
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, clearAuth, navigate, queryClient, refreshToken]);
+
   const meQuery = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: meApi,
     enabled: Boolean(accessToken),
-    retry: 0,
+    retry: (failureCount, error) => !isSessionInvalidError(error) && failureCount < 3,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
   });
 
   const currentUser = meQuery.data || storedUser;
@@ -363,6 +418,20 @@ export default function ChatPage() {
   const showNotice = useCallback((title, message) => {
     setNoticeDialog({ title, message });
   }, []);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      if (refreshToken) {
+        await logoutApi(refreshToken);
+      }
+    } catch {
+      // Keep local logout deterministic even if the remote session is already gone.
+    } finally {
+      queryClient.clear();
+      clearAuth();
+      navigate('/login', { replace: true });
+    }
+  }, [clearAuth, navigate, queryClient, refreshToken]);
 
   useEffect(() => {
     if (meQuery.data) {
@@ -376,9 +445,12 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (!meQuery.error) return;
+    if (!isSessionInvalidError(meQuery.error)) return;
+
+    queryClient.clear();
     clearAuth();
     navigate('/login', { replace: true });
-  }, [clearAuth, meQuery.error, navigate]);
+  }, [clearAuth, meQuery.error, navigate, queryClient]);
 
   const conversationsQuery = useQuery({
     queryKey: ['conversations'],
@@ -534,6 +606,17 @@ export default function ChatPage() {
     [queryClient],
   );
 
+  const getConversationParticipantCount = useCallback(
+    (conversationId) => {
+      const cachedConversations = getConversationItems(queryClient.getQueryData(['conversations']));
+      const conversation = cachedConversations.find(
+        (entry) => toStringId(entry?._id) === toStringId(conversationId),
+      );
+      return Math.max((conversation?.participants || []).length, 2);
+    },
+    [queryClient],
+  );
+
   const handleConversationUpdate = useCallback(
     (conversation) => {
       queryClient.setQueryData(['conversations'], (previous) =>
@@ -618,6 +701,64 @@ export default function ChatPage() {
     [syncConversationPreview, updateMessageInCache],
   );
 
+  const applyReceiptBoundaryUpdate = useCallback(
+    ({
+      conversationId,
+      readerId,
+      at,
+      boundaryMessageId,
+      markDelivered = true,
+      markRead = false,
+    }) => {
+      if (!conversationId || !boundaryMessageId || !readerId) return;
+
+      const participantCount = getConversationParticipantCount(conversationId);
+      updateMessageInCache(conversationId, (previousItems) => {
+        const boundaryIndex = previousItems.findIndex(
+          (message) => toStringId(message._id) === toStringId(boundaryMessageId),
+        );
+        if (boundaryIndex === -1) return previousItems;
+
+        return previousItems.map((message, index) => {
+          if (index > boundaryIndex) return message;
+          if (toStringId(message.sender?._id || message.sender) === toStringId(readerId)) {
+            return message;
+          }
+
+          return applyReceiptProgress(message, readerId, at, {
+            markDelivered,
+            markRead,
+            participantCount,
+          });
+        });
+      });
+
+      queryClient.setQueryData(['conversations'], (previous) =>
+        mapConversationCache(previous, (items) =>
+          items.map((conversation) => {
+            if (toStringId(conversation?._id) !== toStringId(conversationId)) {
+              return conversation;
+            }
+
+            if (toStringId(conversation?.lastMessage?._id) !== toStringId(boundaryMessageId)) {
+              return conversation;
+            }
+
+            return {
+              ...conversation,
+              lastMessage: applyReceiptProgress(conversation.lastMessage, readerId, at, {
+                markDelivered,
+                markRead,
+                participantCount,
+              }),
+            };
+          }),
+        ),
+      );
+    },
+    [getConversationParticipantCount, queryClient, updateMessageInCache],
+  );
+
   const handleRemoveSelfMessage = useCallback(
     ({ conversationId, messageId }) => {
       updateMessageInCache(conversationId, (previousItems) =>
@@ -627,24 +768,40 @@ export default function ChatPage() {
     [updateMessageInCache],
   );
 
-  const handleReadUpdate = useCallback(
-    ({ conversationId, messageIds, userId: readerId, at }) => {
-      if (!conversationId || !Array.isArray(messageIds) || messageIds.length === 0) return;
-
-      const ids = new Set(messageIds.map((entry) => toStringId(entry)));
-      updateMessageInCache(conversationId, (previousItems) =>
-        previousItems.map((message) => {
-          if (!ids.has(toStringId(message._id))) return message;
-
-          return {
-            ...message,
-            deliveredTo: appendReceiptEntry(message.deliveredTo, readerId, at),
-            readBy: appendReceiptEntry(message.readBy, readerId, at),
-          };
-        }),
-      );
+  const handleDeliveryUpdate = useCallback(
+    ({ conversationId, lastDeliveredMessageId, userId: readerId, at }) => {
+      applyReceiptBoundaryUpdate({
+        conversationId,
+        readerId,
+        at,
+        boundaryMessageId: lastDeliveredMessageId,
+        markDelivered: true,
+        markRead: false,
+      });
     },
-    [updateMessageInCache],
+    [applyReceiptBoundaryUpdate],
+  );
+
+  const handleReadUpdate = useCallback(
+    ({ conversationId, lastReadMessageId, lastDeliveredMessageId, userId: readerId, at }) => {
+      applyReceiptBoundaryUpdate({
+        conversationId,
+        readerId,
+        at,
+        boundaryMessageId: lastDeliveredMessageId || lastReadMessageId,
+        markDelivered: true,
+        markRead: false,
+      });
+      applyReceiptBoundaryUpdate({
+        conversationId,
+        readerId,
+        at,
+        boundaryMessageId: lastReadMessageId,
+        markDelivered: true,
+        markRead: true,
+      });
+    },
+    [applyReceiptBoundaryUpdate],
   );
 
   const handleTypingUpdate = useCallback((payload) => {
@@ -742,7 +899,14 @@ export default function ChatPage() {
     }
   }, []);
 
+  const clearCallDisconnectTimer = useCallback(() => {
+    if (!callDisconnectTimerRef.current) return;
+    clearTimeout(callDisconnectTimerRef.current);
+    callDisconnectTimerRef.current = null;
+  }, []);
+
   const resetCallState = useCallback(() => {
+    clearCallDisconnectTimer();
     if (peerConnectionRef.current) {
       peerConnectionRef.current.onicecandidate = null;
       peerConnectionRef.current.ontrack = null;
@@ -752,13 +916,21 @@ export default function ChatPage() {
     }
 
     stopStreams();
+    incomingCallRef.current = null;
+    activeCallIdRef.current = '';
+    callStateRef.current = 'idle';
+    callPartnerIdRef.current = '';
+    callTypeRef.current = 'voice';
+    privateCallBootstrapRef.current = false;
     setIncomingCall(null);
     setActiveCallId('');
     setCallPartnerId('');
     setCallState('idle');
     callStartedAtRef.current = 0;
     pendingSignalsRef.current = {};
-  }, [stopStreams]);
+  }, [clearCallDisconnectTimer, stopStreams]);
+
+  useEffect(() => () => clearCallDisconnectTimer(), [clearCallDisconnectTimer]);
 
   const createPeerConnection = useCallback(
     (callId, partnerUserId) => {
@@ -792,14 +964,41 @@ export default function ChatPage() {
 
       peerConnection.onconnectionstatechange = () => {
         const state = peerConnection.connectionState;
+        const hasRemoteDescription = Boolean(peerConnection.remoteDescription);
+        if (state === 'connecting') {
+          clearCallDisconnectTimer();
+          if (callStateRef.current !== 'connected') {
+            callStateRef.current = 'connecting';
+            setCallState('connecting');
+          }
+          return;
+        }
+
         if (state === 'connected') {
+          clearCallDisconnectTimer();
+          callStateRef.current = 'connected';
           setCallState('connected');
           if (!callStartedAtRef.current) {
             callStartedAtRef.current = Date.now();
           }
+          return;
         }
-        if (['failed', 'disconnected', 'closed'].includes(state)) {
-          resetCallState();
+
+        if (['disconnected', 'failed', 'closed'].includes(state)) {
+          if (!hasRemoteDescription) {
+            callStateRef.current = 'connecting';
+            setCallState('connecting');
+            return;
+          }
+
+          clearCallDisconnectTimer();
+          callDisconnectTimerRef.current = setTimeout(() => {
+            if (peerConnectionRef.current !== peerConnection) return;
+            const latestState = peerConnection.connectionState;
+            if (latestState === 'connected' || latestState === 'connecting') return;
+            resetCallState();
+          }, PRIVATE_CALL_DISCONNECT_GRACE_MS);
+          return;
         }
       };
 
@@ -812,7 +1011,7 @@ export default function ChatPage() {
       peerConnectionRef.current = peerConnection;
       return peerConnection;
     },
-    [iceServers, resetCallState],
+    [clearCallDisconnectTimer, iceServers, resetCallState],
   );
 
   const startLocalMedia = useCallback(async (nextCallType) => {
@@ -913,6 +1112,58 @@ export default function ChatPage() {
       }
     },
     [applyCallSignal],
+  );
+
+  useEffect(() => {
+    if (!activeCallId) return;
+    void flushPendingSignals(activeCallId);
+  }, [activeCallId, flushPendingSignals]);
+
+  const beginOutgoingPrivateCall = useCallback(
+    async ({ callId, partnerUserId, nextCallType }) => {
+      if (!callId || !partnerUserId) {
+        resetCallState();
+        return false;
+      }
+
+      if (privateCallBootstrapRef.current) {
+        return true;
+      }
+
+      privateCallBootstrapRef.current = true;
+
+      try {
+        if (!localStreamRef.current) {
+          await startLocalMedia(nextCallType);
+        }
+
+        const peerConnection = peerConnectionRef.current || createPeerConnection(callId, partnerUserId);
+        if (!peerConnection) {
+          resetCallState();
+          return false;
+        }
+
+        await flushPendingSignals(callId);
+
+        if (!peerConnection.localDescription) {
+          const offer = await peerConnection.createOffer();
+          await peerConnection.setLocalDescription(offer);
+
+          getSocket()?.emit('call:signal', {
+            callId,
+            toUserId: partnerUserId,
+            signal: { description: peerConnection.localDescription },
+          });
+        }
+
+        callStateRef.current = 'connecting';
+        setCallState('connecting');
+        return true;
+      } finally {
+        privateCallBootstrapRef.current = false;
+      }
+    },
+    [createPeerConnection, flushPendingSignals, resetCallState, startLocalMedia],
   );
 
   const attachGroupRemoteStream = useCallback((peerUserId, stream) => {
@@ -1253,12 +1504,14 @@ export default function ChatPage() {
     (payload) => {
       if (!payload?.callId || !payload?.from?.id) return;
 
-      if (callState !== 'idle') {
+      if (callStateRef.current !== 'idle') {
         const socket = getSocket();
         socket?.emit('call:decline', { callId: payload.callId }, () => { });
         return;
       }
 
+      incomingCallRef.current = payload;
+      callStateRef.current = 'incoming';
       setIncomingCall(payload);
       setCallType(payload.type || 'voice');
       setCallState('incoming');
@@ -1266,29 +1519,40 @@ export default function ChatPage() {
         setActiveConversationId(payload.conversationId);
       }
     },
-    [callState],
+    [],
   );
 
   const handleCallAccepted = useCallback(
     (payload) => {
-      if (!payload?.callId || payload.callId !== activeCallId) return;
+      if (!payload?.callId || payload.callId !== activeCallIdRef.current) return;
+      if (privateCallBootstrapRef.current || peerConnectionRef.current) return;
+      if (callStateRef.current !== 'outgoing') return;
 
-      if (callState === 'outgoing' || callState === 'connecting') {
-        setCallState('connecting');
-      }
+      const partnerUserId = toStringId(payload.byUserId || callPartnerIdRef.current);
+      const nextCallType = callTypeRef.current || 'voice';
+
+      void beginOutgoingPrivateCall({
+        callId: payload.callId,
+        partnerUserId,
+        nextCallType,
+      }).catch(() => {
+        resetCallState();
+      });
     },
-    [activeCallId, callState],
+    [beginOutgoingPrivateCall, resetCallState],
   );
 
   const handleCallDeclined = useCallback(
     (payload) => {
       if (!payload?.callId) return;
-      if (payload.callId !== activeCallId && payload.callId !== incomingCall?.callId) return;
+      if (payload.callId !== activeCallIdRef.current && payload.callId !== incomingCallRef.current?.callId) {
+        return;
+      }
 
       resetCallState();
       queryClient.invalidateQueries({ queryKey: ['calls', 'history'] });
     },
-    [activeCallId, incomingCall?.callId, queryClient, resetCallState],
+    [queryClient, resetCallState],
   );
 
   const handleCallSignalEvent = useCallback(
@@ -1296,7 +1560,7 @@ export default function ChatPage() {
       if (!payload?.callId || !payload.signal) return;
 
       const hasPeer = Boolean(peerConnectionRef.current);
-      const isActiveSignal = payload.callId === activeCallId;
+      const isActiveSignal = payload.callId === activeCallIdRef.current;
       if (!hasPeer || !isActiveSignal) {
         queuePendingSignal(payload);
         return;
@@ -1305,29 +1569,33 @@ export default function ChatPage() {
       await applyCallSignal(payload);
       await flushPendingSignals(payload.callId);
     },
-    [activeCallId, applyCallSignal, flushPendingSignals, queuePendingSignal],
+    [applyCallSignal, flushPendingSignals, queuePendingSignal],
   );
 
   const handleCallEnded = useCallback(
     (payload) => {
       if (!payload?.callId) return;
-      if (payload.callId !== activeCallId && payload.callId !== incomingCall?.callId) return;
+      if (payload.callId !== activeCallIdRef.current && payload.callId !== incomingCallRef.current?.callId) {
+        return;
+      }
 
       resetCallState();
       queryClient.invalidateQueries({ queryKey: ['calls', 'history'] });
     },
-    [activeCallId, incomingCall?.callId, queryClient, resetCallState],
+    [queryClient, resetCallState],
   );
 
   const handleCallMissed = useCallback(
     (payload) => {
       if (!payload?.callId) return;
-      if (payload.callId !== activeCallId && payload.callId !== incomingCall?.callId) return;
+      if (payload.callId !== activeCallIdRef.current && payload.callId !== incomingCallRef.current?.callId) {
+        return;
+      }
 
       resetCallState();
       queryClient.invalidateQueries({ queryKey: ['calls', 'history'] });
     },
-    [activeCallId, incomingCall?.callId, queryClient, resetCallState],
+    [queryClient, resetCallState],
   );
 
   const handleGroupCallStarted = useCallback(
@@ -1480,6 +1748,7 @@ export default function ChatPage() {
     },
     onMessage: handleIncomingMessage,
     onMessageUpdate: handleMessageUpdate,
+    onDeliveryUpdate: handleDeliveryUpdate,
     onRemoveSelfMessage: handleRemoveSelfMessage,
     onReadUpdate: handleReadUpdate,
     onConversationUpdate: handleConversationUpdate,
@@ -1783,20 +2052,14 @@ export default function ChatPage() {
       try {
         const socket = getSocket();
         if (socket?.connected) {
-          const ack = await new Promise((resolve) => {
-            socket.emit(
-              'message:send',
-              {
-                conversationId: activeConversationId,
-                clientMessageId: optimisticId,
-                type: 'text',
-                text: text.trim(),
-                replyTo: replyTo?.rawId || replyTo?.id || null,
-                clientId: optimisticId,
-              },
-              (response) => resolve(response),
-            );
-          });
+          const ack = await emitSocketAck('message:send', {
+            conversationId: activeConversationId,
+            clientMessageId: optimisticId,
+            type: 'text',
+            text: text.trim(),
+            replyTo: replyTo?.rawId || replyTo?.id || null,
+            clientId: optimisticId,
+          }, socket);
 
           const createdFromSocket = ack?.data?.message || ack?.message;
           if (ack?.ok && createdFromSocket) {
@@ -1906,13 +2169,11 @@ export default function ChatPage() {
       try {
         const socket = getSocket();
         if (socket?.connected) {
-          const ack = await new Promise((resolve) => {
-            socket.emit(
-              'message:edit',
-              { conversationId: activeConversationId, messageId, text: text.trim() },
-              (response) => resolve(response),
-            );
-          });
+          const ack = await emitSocketAck('message:edit', {
+            conversationId: activeConversationId,
+            messageId,
+            text: text.trim(),
+          }, socket);
           if (ack?.ok) return;
         }
 
@@ -1967,13 +2228,10 @@ export default function ChatPage() {
       try {
         const socket = getSocket();
         if (socket?.connected) {
-          const ack = await new Promise((resolve) => {
-            socket.emit(
-              'message:star',
-              { conversationId: activeConversationId, messageId },
-              (response) => resolve(response),
-            );
-          });
+          const ack = await emitSocketAck('message:star', {
+            conversationId: activeConversationId,
+            messageId,
+          }, socket);
           if (ack?.ok) return;
         }
 
@@ -1992,13 +2250,10 @@ export default function ChatPage() {
       try {
         const socket = getSocket();
         if (socket?.connected) {
-          const ack = await new Promise((resolve) => {
-            socket.emit(
-              'message:pin',
-              { conversationId: activeConversationId, messageId },
-              (response) => resolve(response),
-            );
-          });
+          const ack = await emitSocketAck('message:pin', {
+            conversationId: activeConversationId,
+            messageId,
+          }, socket);
           if (ack?.ok) return;
         }
 
@@ -2017,13 +2272,11 @@ export default function ChatPage() {
       try {
         const socket = getSocket();
         if (socket?.connected) {
-          const ack = await new Promise((resolve) => {
-            socket.emit(
-              'message:react',
-              { conversationId: activeConversationId, messageId, emoji },
-              (response) => resolve(response),
-            );
-          });
+          const ack = await emitSocketAck('message:react', {
+            conversationId: activeConversationId,
+            messageId,
+            emoji,
+          }, socket);
           if (ack?.ok) return;
         }
 
@@ -2098,17 +2351,11 @@ export default function ChatPage() {
     try {
       const socket = getSocket();
       if (socket?.connected) {
-        const ack = await new Promise((resolve) => {
-          socket.emit(
-            'message:delete',
-            {
-              conversationId: activeConversationId,
-              messageId: deleteDialog.messageId,
-              scope: deleteDialog.scope,
-            },
-            (response) => resolve(response),
-          );
-        });
+        const ack = await emitSocketAck('message:delete', {
+          conversationId: activeConversationId,
+          messageId: deleteDialog.messageId,
+          scope: deleteDialog.scope,
+        }, socket);
         if (ack?.ok) {
           setDeleteDialog({ open: false, messageId: '', scope: 'everyone' });
           return;
@@ -2134,17 +2381,11 @@ export default function ChatPage() {
     try {
       const socket = getSocket();
       if (socket?.connected) {
-        const ack = await new Promise((resolve) => {
-          socket.emit(
-            'message:forward',
-            {
-              sourceConversationId: activeConversationId,
-              messageId: forwardDialog.message.rawId,
-              targetConversationId: forwardDialog.targetConversationId,
-            },
-            (response) => resolve(response),
-          );
-        });
+        const ack = await emitSocketAck('message:forward', {
+          sourceConversationId: activeConversationId,
+          messageId: forwardDialog.message.rawId,
+          targetConversationId: forwardDialog.targetConversationId,
+        }, socket);
         if (ack?.ok) {
           setActiveConversationId(forwardDialog.targetConversationId);
           setForwardDialog({ open: false, message: null, targetConversationId: '' });
@@ -2196,48 +2437,40 @@ export default function ChatPage() {
 
       try {
         setCallType(nextType);
+        callTypeRef.current = nextType;
+        callStateRef.current = 'outgoing';
         setCallState('outgoing');
 
-        const initAck = await new Promise((resolve) => {
-          socket.emit(
-            'call:initiate',
-            { conversationId, type: nextType },
-            (response) => resolve(response),
-          );
-        });
+        const initAck = await emitSocketAck('call:initiate', {
+          conversationId,
+          type: nextType,
+        }, socket);
 
         if (!initAck?.ok || !initAck.callId || !initAck.calleeId) {
+          activeCallIdRef.current = '';
+          callPartnerIdRef.current = '';
+          callStateRef.current = 'idle';
           setCallState('idle');
           return;
         }
 
+        activeCallIdRef.current = initAck.callId;
+        callPartnerIdRef.current = initAck.calleeId;
         setActiveCallId(initAck.callId);
         setCallPartnerId(initAck.calleeId);
-
-        await startLocalMedia(nextType);
-        const peerConnection = createPeerConnection(initAck.callId, initAck.calleeId);
-        if (!peerConnection) {
-          resetCallState();
-          return;
-        }
-
-        await flushPendingSignals(initAck.callId);
-
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-
-        socket.emit('call:signal', {
+        await beginOutgoingPrivateCall({
           callId: initAck.callId,
-          toUserId: initAck.calleeId,
-          signal: { description: peerConnection.localDescription },
+          partnerUserId: initAck.calleeId,
+          nextCallType: nextType,
         });
-
-        setCallState('connecting');
       } catch {
+        if (activeCallIdRef.current) {
+          socket.emit('call:end', { callId: activeCallIdRef.current, duration: 0 }, () => { });
+        }
         resetCallState();
       }
     },
-    [callState, createPeerConnection, currentUser?.id, flushPendingSignals, resetCallState, startLocalMedia],
+    [beginOutgoingPrivateCall, callState, currentUser?.id, resetCallState],
   );
 
   const startGroupCallForConversation = useCallback(
@@ -2258,9 +2491,9 @@ export default function ChatPage() {
         const normalizedSession = mapGroupCallSession(existingSession);
         setGroupCallSession(normalizedSession);
 
-        const joinAck = await new Promise((resolve) => {
-          socket.emit('group-call:join', { sessionId: normalizedSession._id }, (response) => resolve(response));
-        });
+        const joinAck = await emitSocketAck('group-call:join', {
+          sessionId: normalizedSession._id,
+        }, socket);
 
         if (!joinAck?.ok || !joinAck.session) {
           return;
@@ -2279,13 +2512,10 @@ export default function ChatPage() {
         return;
       }
 
-      const startAck = await new Promise((resolve) => {
-        socket.emit(
-          'group-call:start',
-          { conversationId, type: nextType },
-          (response) => resolve(response),
-        );
-      });
+      const startAck = await emitSocketAck('group-call:start', {
+        conversationId,
+        type: nextType,
+      }, socket);
 
       if (!startAck?.ok || !startAck.session) return;
 
@@ -2338,25 +2568,36 @@ export default function ChatPage() {
     const socket = getSocket();
     if (!socket) return;
 
+    const pendingIncomingCall = incomingCall;
+
     try {
-      const ack = await new Promise((resolve) => {
-        socket.emit('call:accept', { callId: incomingCall.callId }, (response) => resolve(response));
-      });
+      const ack = await emitSocketAck('call:accept', {
+        callId: pendingIncomingCall.callId,
+      }, socket);
 
       if (!ack?.ok) {
         resetCallState();
         return;
       }
 
-      setActiveCallId(incomingCall.callId);
-      setCallPartnerId(incomingCall.from.id);
-      setCallType(incomingCall.type || 'voice');
+      activeCallIdRef.current = pendingIncomingCall.callId;
+      incomingCallRef.current = null;
+      callStateRef.current = 'connecting';
+      callPartnerIdRef.current = pendingIncomingCall.from.id;
+      callTypeRef.current = pendingIncomingCall.type || 'voice';
+      setActiveCallId(pendingIncomingCall.callId);
+      setCallPartnerId(pendingIncomingCall.from.id);
+      setCallType(pendingIncomingCall.type || 'voice');
       setIncomingCall(null);
-
-      await startLocalMedia(incomingCall.type || 'voice');
-      createPeerConnection(incomingCall.callId, incomingCall.from.id);
-      await flushPendingSignals(incomingCall.callId);
       setCallState('connecting');
+
+      await startLocalMedia(pendingIncomingCall.type || 'voice');
+      const peerConnection = createPeerConnection(pendingIncomingCall.callId, pendingIncomingCall.from.id);
+      if (!peerConnection) {
+        resetCallState();
+        return;
+      }
+      await flushPendingSignals(pendingIncomingCall.callId);
     } catch {
       resetCallState();
     }
@@ -2366,7 +2607,8 @@ export default function ChatPage() {
     if (!incomingCall?.callId) return;
 
     const socket = getSocket();
-    socket?.emit('call:decline', { callId: incomingCall.callId }, () => { });
+    const callId = incomingCall.callId;
+    socket?.emit('call:decline', { callId }, () => { });
     resetCallState();
     queryClient.invalidateQueries({ queryKey: ['calls', 'history'] });
   }, [incomingCall?.callId, queryClient, resetCallState]);
@@ -2399,9 +2641,9 @@ export default function ChatPage() {
       return;
     }
 
-    const ack = await new Promise((resolve) => {
-      socket.emit('group-call:leave', { sessionId: groupCallSession._id }, (response) => resolve(response));
-    });
+    const ack = await emitSocketAck('group-call:leave', {
+      sessionId: groupCallSession._id,
+    }, socket);
 
     if (ack?.ok && ack.session) {
       const nextSession = mapGroupCallSession(ack.session);
@@ -2418,9 +2660,9 @@ export default function ChatPage() {
     const socket = getSocket();
     if (!socket) return;
 
-    const ack = await new Promise((resolve) => {
-      socket.emit('group-call:end', { sessionId: groupCallSession._id }, (response) => resolve(response));
-    });
+    const ack = await emitSocketAck('group-call:end', {
+      sessionId: groupCallSession._id,
+    }, socket);
 
     if (ack?.ok) {
       setGroupCallSession(null);
@@ -2612,6 +2854,20 @@ export default function ChatPage() {
         pollOptionCount: Array.isArray(message.content?.poll?.options) ? message.content.poll.options.length : 0,
         mediaUrl: message.content?.mediaUrl || message.content?.media?.url || '',
         fileName: message.content?.fileName || message.content?.media?.fileName || '',
+        reactions: Array.isArray(message.reactions)
+          ? message.reactions
+            .map((reaction) => ({
+              emoji: reaction.emoji,
+              count: Array.isArray(reaction.users) ? reaction.users.length : 0,
+              reactedByCurrentUser: Array.isArray(reaction.users)
+                ? reaction.users.some(
+                  (entry) => toStringId(entry?._id || entry) === toStringId(currentUser?.id),
+                )
+                : false,
+            }))
+            .filter((reaction) => reaction.count > 0)
+            .sort((left, right) => right.count - left.count)
+          : [],
       })),
     [currentUser?.id, participantCount, rawMessages],
   );
@@ -2825,6 +3081,7 @@ export default function ChatPage() {
         onAddStatus={handleAddStatus}
         onNewCall={handleNewCall}
         onCreateCallLink={handleCreateCallLink}
+        onLogout={handleLogout}
         typingLabel={activeTypingUsers[0] ? `${activeTypingUsers[0].username || activeTypingUsers[0].displayName || 'Someone'} typing...` : ''}
         currentCall={callState !== 'idle' ? { state: callState } : null}
         settingsVersion="WhatsApp Clone"
@@ -2867,6 +3124,7 @@ export default function ChatPage() {
         ref={statusFileInputRef}
         type="file"
         accept="image/*,video/*"
+        data-testid="status-file-input"
         className="hidden"
         onChange={(event) => {
           const file = event.target.files?.[0] || null;
@@ -2880,6 +3138,7 @@ export default function ChatPage() {
 
       {noticeDialog ? (
         <ModalOverlay onClose={() => setNoticeDialog(null)}>
+          <div data-testid="notice-dialog">
           <DialogCard
             title={noticeDialog.title}
             description={noticeDialog.message}
@@ -2897,6 +3156,7 @@ export default function ChatPage() {
               {noticeDialog.message}
             </div>
           </DialogCard>
+          </div>
         </ModalOverlay>
       ) : null}
 
@@ -2910,6 +3170,7 @@ export default function ChatPage() {
             })
           }
         >
+          <div data-testid="group-dialog">
           <DialogCard
             title="Create Group"
             description="Set a group name and choose the members to add."
@@ -2945,6 +3206,7 @@ export default function ChatPage() {
             <div className="space-y-4">
               <input
                 type="text"
+                data-testid="group-title-input"
                 value={groupDialog.title}
                 onChange={(event) =>
                   setGroupDialog((previous) => ({ ...previous, title: event.target.value }))
@@ -2983,6 +3245,7 @@ export default function ChatPage() {
               </div>
             </div>
           </DialogCard>
+          </div>
         </ModalOverlay>
       ) : null}
 
@@ -2990,6 +3253,7 @@ export default function ChatPage() {
         <ModalOverlay
           onClose={() => setDeleteDialog({ open: false, messageId: '', scope: 'everyone' })}
         >
+          <div data-testid="delete-dialog">
           <DialogCard
             title="Delete Message"
             description="Choose whether to delete this message only for you or for everyone."
@@ -3041,6 +3305,7 @@ export default function ChatPage() {
               </label>
             </div>
           </DialogCard>
+          </div>
         </ModalOverlay>
       ) : null}
 
@@ -3048,6 +3313,7 @@ export default function ChatPage() {
         <ModalOverlay
           onClose={() => setForwardDialog({ open: false, message: null, targetConversationId: '' })}
         >
+          <div data-testid="forward-dialog">
           <DialogCard
             title="Forward Message"
             description="Choose the conversation that should receive this forwarded message."
@@ -3075,6 +3341,7 @@ export default function ChatPage() {
           >
             <div className="space-y-3">
               <select
+                data-testid="forward-target-select"
                 value={forwardDialog.targetConversationId}
                 onChange={(event) =>
                   setForwardDialog((previous) => ({
@@ -3095,6 +3362,7 @@ export default function ChatPage() {
               </div>
             </div>
           </DialogCard>
+          </div>
         </ModalOverlay>
       ) : null}
 
@@ -3109,6 +3377,7 @@ export default function ChatPage() {
             })
           }
         >
+          <div data-testid="status-composer-dialog">
           <DialogCard
             title="Add Status"
             description="Post a text update or upload an image/video for your contacts."
@@ -3130,6 +3399,7 @@ export default function ChatPage() {
                 </button>
                 <button
                   type="button"
+                  data-testid="status-post-button"
                   className="rounded-full bg-[#0A7CFF] px-5 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                   disabled={createStatusMutation.isPending}
                   onClick={() => {
@@ -3143,6 +3413,7 @@ export default function ChatPage() {
           >
             <div className="space-y-4">
               <textarea
+                data-testid="status-text-input"
                 value={statusComposer.text}
                 onChange={(event) =>
                   setStatusComposer((previous) => ({ ...previous, text: event.target.value }))
@@ -3152,6 +3423,7 @@ export default function ChatPage() {
                 className={dialogInputClass}
               />
               <select
+                data-testid="status-privacy-select"
                 value={statusComposer.privacy}
                 onChange={(event) =>
                   setStatusComposer((previous) => ({ ...previous, privacy: event.target.value }))
@@ -3172,6 +3444,7 @@ export default function ChatPage() {
                   </div>
                   <button
                     type="button"
+                    data-testid="status-choose-file-button"
                     className="rounded-full border border-white/10 px-4 py-2 text-sm text-white"
                     onClick={() => statusFileInputRef.current?.click()}
                   >
@@ -3198,6 +3471,7 @@ export default function ChatPage() {
               </div>
             </div>
           </DialogCard>
+          </div>
         </ModalOverlay>
       ) : null}
     </>

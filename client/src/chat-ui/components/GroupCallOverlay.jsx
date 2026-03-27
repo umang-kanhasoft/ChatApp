@@ -29,7 +29,7 @@ export default function GroupCallOverlay({
   if (!isOpen) return null;
 
   return (
-    <div style={styles.overlay}>
+    <div style={styles.overlay} data-testid="group-call-overlay">
       <div style={styles.card}>
         <div style={styles.header}>
           <span style={styles.title}>{title}</span>
@@ -74,19 +74,19 @@ export default function GroupCallOverlay({
         )}
 
         <div style={styles.controls}>
-          <button style={styles.secondaryBtn} onClick={onToggleAudio}>
+          <button style={styles.secondaryBtn} data-testid="group-call-audio-toggle" onClick={onToggleAudio}>
             {localAudioEnabled ? 'Mute Mic' : 'Unmute Mic'}
           </button>
           {callType === 'video' ? (
-            <button style={styles.secondaryBtn} onClick={onToggleVideo}>
+            <button style={styles.secondaryBtn} data-testid="group-call-video-toggle" onClick={onToggleVideo}>
               {localVideoEnabled ? 'Stop Camera' : 'Start Camera'}
             </button>
           ) : null}
-          <button style={styles.leaveBtn} onClick={onLeave}>
+          <button style={styles.leaveBtn} data-testid="group-call-leave-button" onClick={onLeave}>
             Leave
           </button>
           {canEnd ? (
-            <button style={styles.endBtn} onClick={onEnd}>
+            <button style={styles.endBtn} data-testid="group-call-end-button" onClick={onEnd}>
               End for All
             </button>
           ) : null}

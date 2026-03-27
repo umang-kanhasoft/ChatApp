@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react';
 import dayjs from 'dayjs';
+import { getReceiptSummary } from '../utils/messageReceipts.js';
 
 import { MoreHorizontal, Archive } from 'lucide-react';
 
@@ -36,8 +37,10 @@ const isLastMessageFromCurrentUser = (conversation, currentUserId) =>
   toStringId(currentUserId);
 
 const getDeliveryTick = (conversation) => {
-  const readCount = (conversation.lastMessage?.readBy || []).length;
-  const deliveredCount = (conversation.lastMessage?.deliveredTo || []).length;
+  const { readCount, deliveredCount } = getReceiptSummary(
+    conversation.lastMessage,
+    (conversation.participants || []).length || 2,
+  );
 
   if (readCount > 1) return { label: '✓✓', className: 'text-[#53bdeb]' };
   if (deliveredCount > 1) return { label: '✓✓', className: 'text-[#8696a0]' };

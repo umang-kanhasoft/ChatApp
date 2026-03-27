@@ -40,7 +40,7 @@ export default function OtpPage() {
 
   return (
     <div className="otp-page">
-      <form className="otp-card" onSubmit={handleSubmit}>
+      <form className="otp-card" data-testid="otp-form" onSubmit={handleSubmit}>
         <button
           type="button"
           className="otp-back"
@@ -65,6 +65,7 @@ export default function OtpPage() {
         <input
           id="otp-hidden"
           className="otp-hidden"
+          data-testid="otp-input"
           inputMode="numeric"
           pattern="[0-9]*"
           maxLength={6}
@@ -74,12 +75,16 @@ export default function OtpPage() {
         />
 
         {verifyMutation.error ? (
-          <p className="error-text">
+          <p className="error-text" data-testid="otp-error">
             {verifyMutation.error.response?.data?.error?.message || 'Invalid or expired code'}
           </p>
         ) : null}
 
-        <button type="submit" disabled={verifyMutation.isPending || code.length < 6}>
+        <button
+          type="submit"
+          data-testid="otp-submit"
+          disabled={verifyMutation.isPending || code.length < 6}
+        >
           {verifyMutation.isPending ? 'Verifying…' : 'Next'}
         </button>
 

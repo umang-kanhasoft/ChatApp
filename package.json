@@ -20,11 +20,20 @@
     "test": "npm run test:server && npm run test:client",
     "test:server": "npm --workspace server run test",
     "test:client": "npm --workspace client run test",
+    "test:server:integration": "node scripts/qa/run-vitest.mjs server/.env.test server/vitest.config.js",
+    "test:e2e": "node scripts/qa/run-e2e.mjs",
+    "test:load": "node scripts/qa/run-load.mjs",
+    "test:security": "node scripts/qa/run-vitest.mjs server/.env.test server/vitest.config.js server/src/tests/security.test.js",
+    "qa:full": "node scripts/qa/full.mjs",
+    "qa:report": "node scripts/qa/report.mjs",
     "format": "prettier --write ."
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "artillery": "^2.0.26",
     "concurrently": "^9.2.1",
-    "prettier": "^3.3.3"
+    "prettier": "^3.3.3",
+    "socket.io-client": "^4.8.3"
   },
   "overrides": {
     "socket.io-parser": "^4.2.6",

@@ -16,7 +16,12 @@ export default function TabBar({ activeTab, onTabChange, chatsBadge = 0 }) {
         const badgeValue = tab.id === 'chats' ? chatsBadge : tab.badge;
 
         return (
-          <button key={tab.id} onClick={() => onTabChange(tab.id)} style={styles.tab}>
+          <button
+            key={tab.id}
+            data-testid={`tab-${tab.id}`}
+            onClick={() => onTabChange(tab.id)}
+            style={styles.tab}
+          >
             <div style={styles.iconContainer}>
               <tab.Icon active={isActive} />
               {badgeValue ? (

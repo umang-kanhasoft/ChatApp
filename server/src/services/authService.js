@@ -5,6 +5,7 @@ import bcrypt from 'bcryptjs';
 import { User } from '../models/User.js';
 import { OtpCode } from '../models/OtpCode.js';
 import { getMailCapability } from '../config/mailTransporter.js';
+import { getRedis } from '../config/redis.js';
 import { env } from '../config/env.js';
 import { ApiError } from '../utils/ApiError.js';
 import {
@@ -15,6 +16,7 @@ import {
 } from '../utils/jwt.js';
 import { getPhoneLookupCandidates, normalizePhone } from '../utils/phone.js';
 import { logger } from '../utils/logger.js';
+import { getPresenceByUserIds } from './presenceService.js';
 import MailService from './MailService.js';
 
 const mailService = new MailService();
@@ -23,6 +25,7 @@ const EMAIL_DELIVERY_UNAVAILABLE_MESSAGE =
 const PHONE_OTP_UNAVAILABLE_MESSAGE =
   'Phone OTP delivery is unavailable. Configure an SMS provider and try again.';
 const REFRESH_SESSION_STATUSES = new Set(['active', 'rotated', 'revoked', 'compromised']);
+const testOtpCode = env.NODE_ENV === 'test' ? env.TEST_OTP_CODE?.trim() || '' : '';
 
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 const normalizeStringValue = (value) => String(value || '').trim();
@@ -43,9 +46,13 @@ const buildAuthPayload = (user) => ({
   about: user.about || '',
 });
 
-const generateOtpCode = () => String(Math.floor(100000 + Math.random() * 900000));
+const generateOtpCode = () => testOtpCode || String(Math.floor(100000 + Math.random() * 900000));
 
 const ensurePhoneOtpAvailable = () => {
+  if (testOtpCode) {
+    return;
+  }
+
   if (env.NODE_ENV !== 'production') {
     return;
   }
@@ -58,12 +65,22 @@ const ensurePhoneOtpAvailable = () => {
   );
 };
 
-const sendOtpCode = async (phone) => {
+const sendOtpCode = async (phone, code) => {
+  if (testOtpCode) {
+    logger.info('test phone OTP generated', { phone, code });
+    return;
+  }
+
   ensurePhoneOtpAvailable();
   logger.warn('phone OTP requested without a configured SMS provider', { phone });
 };
 
 const sendEmailOtp = async (email, code) => {
+  if (testOtpCode) {
+    logger.info('test email OTP generated', { email, code });
+    return;
+  }
+
   await mailService.sendMail({
     email,
     subject: 'Your ChatApp verification code',
@@ -74,6 +91,10 @@ const sendEmailOtp = async (email, code) => {
 };
 
 const ensureEmailDeliveryAvailable = () => {
+  if (testOtpCode) {
+    return;
+  }
+
   const capability = getMailCapability();
   if (capability.available) {
     return;
@@ -136,7 +157,7 @@ const buildTokenPayload = (user, sessionId) => ({
 
 const decodeRefreshExpiration = (refreshToken) => {
   const decoded = jwt.decode(refreshToken);
-  return decoded?.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 30 * 86400000);
+  return decoded?.exp ? new Date(decoded.exp * 1000) : null;
 };
 
 const createSessionRecord = ({ refreshToken, sessionId, userAgent, ip }) => ({
@@ -156,7 +177,7 @@ const createSessionRecord = ({ refreshToken, sessionId, userAgent, ip }) => ({
 const buildSessionPayload = (record) => ({
   id: record.sessionId,
   createdAt: record.createdAt,
-  expiresAt: record.expiresAt,
+  expiresAt: record.expiresAt || null,
   userAgent: record.userAgent || '',
   ip: record.ip || '',
   status: record.status,
@@ -194,7 +215,7 @@ const normalizeRefreshSessionRecord = (item) => {
   const tokenHash = normalizeStringValue(item.tokenHash);
   const expiresAt = parseOptionalDate(item.expiresAt);
 
-  if (!sessionId || !tokenHash || !expiresAt) {
+  if (!sessionId || !tokenHash) {
     return null;
   }
 
@@ -207,7 +228,7 @@ const normalizeRefreshSessionRecord = (item) => {
     status: REFRESH_SESSION_STATUSES.has(item.status) ? item.status : 'active',
     userAgent: normalizeStringValue(item.userAgent),
     ip: normalizeStringValue(item.ip),
-    expiresAt,
+    expiresAt: expiresAt || null,
     createdAt,
     lastUsedAt,
     rotatedAt: parseOptionalDate(item.rotatedAt),
@@ -235,7 +256,12 @@ const normalizeRefreshSessions = (sessions = [], { userId = '' } = {}) => {
 
 const pruneRefreshSessions = (sessions = []) => {
   const now = Date.now();
-  return sessions.filter((item) => new Date(item.expiresAt).getTime() > now);
+  return sessions.filter((item) => {
+    if (!item.expiresAt) {
+      return true;
+    }
+    return new Date(item.expiresAt).getTime() > now;
+  });
 };
 
 const capActiveRefreshSessions = (sessions = []) => {
@@ -690,7 +716,7 @@ export const refreshSession = async (refreshToken, ctx) => {
     );
   }
 
-  const isExpired = new Date(session.expiresAt) <= new Date();
+  const isExpired = session.expiresAt ? new Date(session.expiresAt) <= new Date() : false;
   const hashMismatch = session.tokenHash !== tokenHash;
   const isReusableState = ['rotated', 'compromised'].includes(session.status);
 
@@ -795,6 +821,11 @@ export const matchContactsByPhone = async ({ userId, phones }) => {
     });
   }
 
+  const presenceByUserId = await getPresenceByUserIds({
+    redis: getRedis(),
+    userIds: users.map((entry) => entry._id),
+  });
+
   return {
     matchedUsers: users.map((entry) => ({
       id: entry._id.toString(),
@@ -802,7 +833,7 @@ export const matchContactsByPhone = async ({ userId, phones }) => {
       displayName: entry.displayName,
       avatar: entry.avatar || '',
       phone: entry.phone || '',
-      isOnline: Boolean(entry.isOnline),
+      isOnline: Boolean(presenceByUserId[entry._id.toString()]?.isOnline),
       lastSeen: entry.lastSeen || null,
     })),
     unmatchedPhones,

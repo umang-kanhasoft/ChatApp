@@ -5,6 +5,7 @@ export const useChatSocket = ({
   accessToken,
   onMessage,
   onMessageUpdate,
+  onDeliveryUpdate,
   onRemoveSelfMessage,
   onReadUpdate,
   onConversationUpdate,
@@ -33,6 +34,7 @@ export const useChatSocket = ({
   const callbacksRef = useRef({
     onMessage,
     onMessageUpdate,
+    onDeliveryUpdate,
     onRemoveSelfMessage,
     onReadUpdate,
     onConversationUpdate,
@@ -62,6 +64,7 @@ export const useChatSocket = ({
   callbacksRef.current = {
     onMessage,
     onMessageUpdate,
+    onDeliveryUpdate,
     onRemoveSelfMessage,
     onReadUpdate,
     onConversationUpdate,
@@ -108,6 +111,10 @@ export const useChatSocket = ({
 
     const handleMessageUpdate = (payload) => {
       callbacksRef.current.onMessageUpdate?.(payload);
+    };
+
+    const handleDeliveryUpdate = (payload) => {
+      callbacksRef.current.onDeliveryUpdate?.(payload);
     };
 
     const handleRemoveSelf = (payload) => {
@@ -202,6 +209,7 @@ export const useChatSocket = ({
     socket.on('disconnect', handleDisconnect);
     socket.on('message:new', handleMessage);
     socket.on('message:update', handleMessageUpdate);
+    socket.on('message:delivery-update', handleDeliveryUpdate);
     socket.on('message:remove-self', handleRemoveSelf);
     socket.on('message:read-update', handleReadUpdate);
     socket.on('conversation:update', handleConversationUpdate);
@@ -234,6 +242,7 @@ export const useChatSocket = ({
       socket.off('disconnect', handleDisconnect);
       socket.off('message:new', handleMessage);
       socket.off('message:update', handleMessageUpdate);
+      socket.off('message:delivery-update', handleDeliveryUpdate);
       socket.off('message:remove-self', handleRemoveSelf);
       socket.off('message:read-update', handleReadUpdate);
       socket.off('conversation:update', handleConversationUpdate);

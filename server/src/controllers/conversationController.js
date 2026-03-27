@@ -12,7 +12,10 @@ import {
   removeGroupMember,
   updateGroupMemberRole,
 } from '../services/conversationService.js';
-import { bumpConversationListVersions } from '../services/conversationCacheService.js';
+import {
+  bumpConversationListVersions,
+  bumpConversationMembershipVersions,
+} from '../services/conversationCacheService.js';
 import {
   createMessage,
   deleteMessage,
@@ -91,6 +94,9 @@ export const createPrivateConversation = asyncHandler(async (req, res) => {
   }
 
   await bumpConversationListVersions({
+    userIds: getParticipantIds(conversation),
+  });
+  await bumpConversationMembershipVersions({
     userIds: getParticipantIds(conversation),
   });
 
@@ -447,6 +453,9 @@ export const createGroup = asyncHandler(async (req, res) => {
   await bumpConversationListVersions({
     userIds: getParticipantIds(conversation),
   });
+  await bumpConversationMembershipVersions({
+    userIds: getParticipantIds(conversation),
+  });
 
   created(res, conversation);
 });
@@ -464,6 +473,9 @@ export const addMembersToGroup = asyncHandler(async (req, res) => {
   await bumpConversationListVersions({
     userIds: getParticipantIds(conversation),
   });
+  await bumpConversationMembershipVersions({
+    userIds: getParticipantIds(conversation),
+  });
 
   ok(res, conversation);
 });
@@ -474,12 +486,16 @@ export const removeMemberFromGroup = asyncHandler(async (req, res) => {
     requesterId: req.user.id,
     targetUserId: req.params.userId,
   });
+  const affectedUserIds = [...new Set([...getParticipantIds(conversation), req.params.userId])];
 
   const io = req.app.get('io');
   emitConversationUpdate(io, conversation);
   io?.to(`conversation:${req.params.conversationId}`).emit('group:members-updated', conversation);
   await bumpConversationListVersions({
-    userIds: getParticipantIds(conversation),
+    userIds: affectedUserIds,
+  });
+  await bumpConversationMembershipVersions({
+    userIds: affectedUserIds,
   });
 
   ok(res, conversation);
@@ -512,10 +528,12 @@ export const markConversationAsRead = asyncHandler(async (req, res) => {
   });
 
   const io = req.app.get('io');
-  io?.to(`conversation:${req.params.conversationId}`).emit('message:read-update', {
-    conversationId: req.params.conversationId,
-    ...receipt,
-  });
+  if (receipt.lastReadMessageId || receipt.lastDeliveredMessageId) {
+    io?.to(`conversation:${req.params.conversationId}`).emit('message:read-update', {
+      conversationId: req.params.conversationId,
+      ...receipt,
+    });
+  }
   await bumpConversationListVersions({
     userIds: [req.user.id],
   });

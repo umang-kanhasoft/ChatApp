@@ -1,11 +1,11 @@
 import { channels } from '../data/mockData.js';
 
-export default function UpdatesTab({ currentUser, statuses = [], onViewStatus }) {
+export default function UpdatesTab({ currentUser, statuses = [], onViewStatus, onAddStatus }) {
   const unviewedStatuses = statuses.filter((status) => !status.viewed);
   const viewedStatuses = statuses.filter((status) => status.viewed);
 
   return (
-    <div style={styles.container}>
+    <div style={styles.container} data-testid="updates-tab">
       <div style={styles.header}>
         <div style={styles.headerTop}>
           <span style={styles.privacyBtn}>Privacy</span>
@@ -18,7 +18,7 @@ export default function UpdatesTab({ currentUser, statuses = [], onViewStatus })
           <span style={styles.sectionTitle}>Status</span>
           <button style={styles.seeAllBtn}>See All</button>
         </div>
-        <div style={styles.statusItem}>
+        <div style={styles.statusItem} data-testid="my-status-button" onClick={() => onAddStatus?.()}>
           <div style={styles.myStatusAvatar}>
             <span style={{ fontSize: 28 }}>{currentUser?.avatar || '😊'}</span>
             <div style={styles.addStatusBtn}>+</div>
@@ -35,7 +35,12 @@ export default function UpdatesTab({ currentUser, statuses = [], onViewStatus })
           <>
             <span style={styles.subLabel}>RECENT</span>
             {unviewedStatuses.map((status) => (
-              <div key={status.id} style={styles.statusItem} onClick={() => onViewStatus(status)}>
+              <div
+                key={status.id}
+                style={styles.statusItem}
+                data-testid={`status-item-${status.id}`}
+                onClick={() => onViewStatus(status)}
+              >
                 <div style={styles.statusAvatar}>
                   <div style={styles.statusRing}>
                     <div style={styles.statusAvatarInner}>
@@ -56,7 +61,12 @@ export default function UpdatesTab({ currentUser, statuses = [], onViewStatus })
           <>
             <span style={styles.subLabel}>VIEWED</span>
             {viewedStatuses.map((status) => (
-              <div key={status.id} style={styles.statusItem} onClick={() => onViewStatus(status)}>
+              <div
+                key={status.id}
+                style={styles.statusItem}
+                data-testid={`status-item-${status.id}`}
+                onClick={() => onViewStatus(status)}
+              >
                 <div style={styles.statusAvatar}>
                   <div style={{ ...styles.statusRing, border: '2px solid #8e8e93' }}>
                     <div style={styles.statusAvatarInner}>

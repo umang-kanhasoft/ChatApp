@@ -1,4 +1,5 @@
 import dayjs from 'dayjs';
+import { getReceiptSummary } from '../utils/messageReceipts.js';
 
 const toStringId = (value) => String(value);
 
@@ -116,11 +117,7 @@ export default function MessageBubble({
   const isOwn = senderId === toStringId(currentUserId);
   const senderName = message.sender?.displayName || message.sender?.username || 'You';
 
-  const deliveredCount = (message.deliveredTo || []).length;
-  const readCount = (message.readBy || []).length;
-  const peers = Math.max(participantCount - 1, 1);
-  const readByAllPeers = readCount - 1 >= peers;
-  const deliveredToAllPeers = deliveredCount - 1 >= peers;
+  const { readByAllPeers, deliveredToAllPeers } = getReceiptSummary(message, participantCount);
 
   const isStarred = isStarredByUser(message, currentUserId);
   const isPinned = Boolean(message.pinnedAt);

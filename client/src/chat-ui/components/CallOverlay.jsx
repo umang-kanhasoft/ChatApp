@@ -25,7 +25,7 @@ export default function CallOverlay({
   }
 
   return (
-    <div style={styles.overlay}>
+    <div style={styles.overlay} data-testid="call-overlay">
       <div style={styles.card}>
         <div style={styles.header}>
           <span style={styles.partnerName}>{partnerLabel}</span>
@@ -47,15 +47,27 @@ export default function CallOverlay({
         <div style={styles.actions}>
           {callState === 'incoming' ? (
             <>
-              <button style={{ ...styles.actionBtn, ...styles.acceptBtn }} onClick={onAccept}>
+              <button
+                style={{ ...styles.actionBtn, ...styles.acceptBtn }}
+                data-testid="call-accept-button"
+                onClick={onAccept}
+              >
                 Accept
               </button>
-              <button style={{ ...styles.actionBtn, ...styles.declineBtn }} onClick={onDecline}>
+              <button
+                style={{ ...styles.actionBtn, ...styles.declineBtn }}
+                data-testid="call-decline-button"
+                onClick={onDecline}
+              >
                 Decline
               </button>
             </>
           ) : (
-            <button style={{ ...styles.actionBtn, ...styles.endBtn }} onClick={onEnd}>
+            <button
+              style={{ ...styles.actionBtn, ...styles.endBtn }}
+              data-testid="call-end-button"
+              onClick={onEnd}
+            >
               End Call
             </button>
           )}
@@ -81,11 +93,14 @@ const styles = {
   card: {
     width: '100%',
     maxWidth: 420,
+    maxHeight: 'calc(100vh - 40px)',
     borderRadius: 24,
     background: '#101316',
     border: '1px solid rgba(255,255,255,0.08)',
     overflow: 'hidden',
     boxShadow: '0 20px 60px rgba(0,0,0,0.45)',
+    display: 'flex',
+    flexDirection: 'column',
   },
   header: {
     display: 'flex',
@@ -98,9 +113,12 @@ const styles = {
   status: { color: 'rgba(255,255,255,0.62)', fontSize: 14 },
   videoStage: {
     position: 'relative',
+    minHeight: 260,
+    maxHeight: 'min(60vh, 640px)',
     aspectRatio: '9 / 16',
     background: '#000',
     overflow: 'hidden',
+    flex: '1 1 auto',
   },
   remoteVideo: {
     width: '100%',
@@ -142,11 +160,14 @@ const styles = {
   actions: {
     display: 'flex',
     gap: 12,
+    flexWrap: 'wrap',
     justifyContent: 'center',
     padding: '20px 20px 24px',
+    flexShrink: 0,
   },
   actionBtn: {
     minWidth: 132,
+    minHeight: 48,
     borderRadius: 999,
     border: 'none',
     padding: '14px 20px',

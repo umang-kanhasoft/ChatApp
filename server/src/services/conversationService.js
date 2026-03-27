@@ -2,9 +2,14 @@ import { StatusCodes } from 'http-status-codes';
 import { Conversation } from '../models/Conversation.js';
 import { User } from '../models/User.js';
 import {
+  readConversationRoomListCache,
   readConversationListCache,
+  writeConversationRoomListCache,
   writeConversationListCache,
 } from './conversationCacheService.js';
+import { getRedis } from '../config/redis.js';
+import { attachReceiptSummaryToMessage } from './messageReceiptService.js';
+import { getPresenceByUserIds } from './presenceService.js';
 import { ApiError } from '../utils/ApiError.js';
 import { decodeCursor, encodeCursor } from '../utils/pagination.js';
 
@@ -16,13 +21,91 @@ const conversationPopulate = [
 const toStringId = (value) => String(value);
 const buildPrivateConversationKey = (leftUserId, rightUserId) =>
   [toStringId(leftUserId), toStringId(rightUserId)].sort().join(':');
+const toPlainConversation = (conversation) =>
+  (() => {
+    const plain = conversation?.toObject ? conversation.toObject() : conversation;
+    if (!plain) {
+      return plain;
+    }
+
+    return {
+      ...plain,
+      id: plain.id || toStringId(plain._id),
+    };
+  })();
+const mergeConversationPresence = (conversation, presenceByUserId) => ({
+  ...conversation,
+  participants: (conversation?.participants || []).map((participant) => {
+    const participantUser = participant?.user;
+    const participantUserId = toStringId(participantUser?._id || participantUser);
+    const presence = presenceByUserId[participantUserId];
+    if (!participantUser || !presence) {
+      return participant;
+    }
+
+    return {
+      ...participant,
+      user: {
+        ...participantUser,
+        isOnline: Boolean(presence.isOnline),
+        lastSeen:
+          presence.isOnline || !presence.lastSeen
+            ? participantUser.lastSeen || presence.lastSeen || null
+            : presence.lastSeen,
+      },
+    };
+  }),
+});
+const withLastMessageReceiptSummary = (conversation) => ({
+  ...conversation,
+  lastMessage: conversation?.lastMessage
+    ? attachReceiptSummaryToMessage({
+        message: conversation.lastMessage,
+        participants: conversation.participants || [],
+      })
+    : conversation?.lastMessage || null,
+});
+
+export const hydrateConversationsPresence = async (conversations) => {
+  const plainItems = (conversations || []).map(toPlainConversation);
+  if (plainItems.length === 0) {
+    return [];
+  }
+
+  const userIds = [
+    ...new Set(
+      plainItems.flatMap((conversation) =>
+        (conversation?.participants || []).map((participant) =>
+          toStringId(participant?.user?._id || participant?.user),
+        ),
+      ),
+    ),
+  ].filter(Boolean);
+
+  const presenceByUserId = await getPresenceByUserIds({
+    redis: getRedis(),
+    userIds,
+  });
+
+  return plainItems.map((conversation) =>
+    withLastMessageReceiptSummary(mergeConversationPresence(conversation, presenceByUserId)),
+  );
+};
 
 const populateConversationById = async (conversationId) => {
   let query = Conversation.findById(conversationId);
   for (const item of conversationPopulate) {
     query = query.populate(item);
   }
-  return query;
+  query = query.lean();
+
+  const conversation = await query;
+  if (!conversation) {
+    return null;
+  }
+
+  const [hydrated] = await hydrateConversationsPresence([conversation]);
+  return hydrated || null;
 };
 
 export const ensurePrivateConversation = async (userId, peerUserId) => {
@@ -85,10 +168,13 @@ export const ensurePrivateConversation = async (userId, peerUserId) => {
     const existing = await Conversation.findOne({
       type: 'private',
       privateKey,
-    }).populate(conversationPopulate);
+    })
+      .populate(conversationPopulate)
+      .lean();
 
     if (existing) {
-      return existing;
+      const [hydrated] = await hydrateConversationsPresence([existing]);
+      return hydrated;
     }
 
     throw error;
@@ -98,7 +184,10 @@ export const ensurePrivateConversation = async (userId, peerUserId) => {
 export const listUserConversations = async ({ userId, limit = 20, cursor }) => {
   const cached = await readConversationListCache({ userId, limit, cursor });
   if (cached) {
-    return cached;
+    return {
+      items: await hydrateConversationsPresence(cached.items || []),
+      nextCursor: cached.nextCursor || null,
+    };
   }
 
   const cursorDate = decodeCursor(cursor);
@@ -114,14 +203,16 @@ export const listUserConversations = async ({ userId, limit = 20, cursor }) => {
   const items = await Conversation.find(query)
     .sort({ lastActivityAt: -1, _id: -1 })
     .limit(limit + 1)
-    .populate(conversationPopulate);
+    .populate(conversationPopulate)
+    .lean();
 
   const hasMore = items.length > limit;
   const pageItems = hasMore ? items.slice(0, limit) : items;
   const nextCursor = hasMore ? encodeCursor(pageItems[pageItems.length - 1].lastActivityAt) : null;
+  const hydratedItems = await hydrateConversationsPresence(pageItems);
 
   const response = {
-    items: pageItems,
+    items: hydratedItems,
     nextCursor,
   };
 
@@ -130,7 +221,7 @@ export const listUserConversations = async ({ userId, limit = 20, cursor }) => {
     limit,
     cursor,
     data: {
-      items: pageItems.map((item) => (item.toObject ? item.toObject() : item)),
+      items: pageItems,
       nextCursor,
     },
   });
@@ -163,6 +254,28 @@ export const listUserConversationRoomIds = async ({ userId, limit = 500, cursor 
     items: pageItems.map((item) => String(item._id)),
     nextCursor,
   };
+};
+
+export const listUserConversationJoinRoomIds = async ({ userId }) => {
+  const cached = await readConversationRoomListCache({ userId });
+  if (cached) {
+    return cached;
+  }
+
+  const items = await Conversation.find({
+    'participants.user': userId,
+  })
+    .sort({ lastActivityAt: -1, _id: -1 })
+    .select('_id')
+    .lean();
+
+  const roomIds = items.map((item) => String(item._id));
+  await writeConversationRoomListCache({
+    userId,
+    roomIds,
+  });
+
+  return roomIds;
 };
 
 export const ensureConversationMember = async (conversationId, userId) => {

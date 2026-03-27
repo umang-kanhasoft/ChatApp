@@ -2,6 +2,16 @@ import { io } from 'socket.io-client';
 
 let socketInstance = null;
 
+const toAckError = (value) => {
+  if (!value) return null;
+  if (value instanceof Error) return value;
+  if (typeof value === 'string') return new Error(value);
+  if (typeof value?.message === 'string' && value.message) {
+    return new Error(value.message);
+  }
+  return null;
+};
+
 export const connectSocket = (token) => {
   if (!token) return null;
   if (socketInstance) {
@@ -31,6 +41,29 @@ export const connectSocket = (token) => {
 };
 
 export const getSocket = () => socketInstance;
+
+export const emitSocketAck = (event, payload, socket = socketInstance) =>
+  new Promise((resolve, reject) => {
+    if (!socket) {
+      resolve(null);
+      return;
+    }
+
+    socket.emit(event, payload, (firstArg, secondArg) => {
+      if (secondArg !== undefined) {
+        const error = toAckError(firstArg);
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve(secondArg ?? null);
+        return;
+      }
+
+      resolve(firstArg ?? null);
+    });
+  });
 
 export const disconnectSocket = () => {
   if (socketInstance) {

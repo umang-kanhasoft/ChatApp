@@ -6,7 +6,6 @@ export default function ContactInfo({ chat, onBack, onStartCall }) {
       <div style={styles.header}>
         <button style={styles.backBtn} onClick={onBack}>
           <Icons.Back />
-          <span style={styles.backText}>Back</span>
         </button>
         <span style={styles.editBtn}>Edit</span>
       </div>

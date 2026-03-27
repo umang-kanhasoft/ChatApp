@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chatapp-worker
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: chatapp-worker
+  template:
+    metadata:
+      labels:
+        app: chatapp-worker
+    spec:
+      terminationGracePeriodSeconds: 60
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: chatapp-worker
+      containers:
+        - name: worker
+          image: ghcr.io/your-org/chatapp-server:latest
+          imagePullPolicy: IfNotPresent
+          command: ["node", "dist/worker.js"]
+          workingDir: /app/server
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: REDIS_REQUIRED
+              value: "true"
+            - name: MONGODB_FALLBACK_TO_MEMORY
+              value: "false"
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          envFrom:
+            - configMapRef:
+                name: chatapp-server-config
+            - secretRef:
+                name: chatapp-server-secrets
+          resources:
+            requests:
+              cpu: 300m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi

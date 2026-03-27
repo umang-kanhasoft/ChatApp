@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node dist/server.js",
+    "start:worker": "node dist/worker.js",
     "build": "npm run lint && npm run test && npm run bundle",
-    "bundle": "esbuild src/server.js --bundle --platform=node --target=node20 --format=esm --outfile=dist/server.js --packages=external && node scripts/copy-templates.mjs",
+    "bundle": "esbuild src/server.js --bundle --platform=node --target=node20 --format=esm --outfile=dist/server.js --packages=external && esbuild src/worker.js --bundle --platform=node --target=node20 --format=esm --outfile=dist/worker.js --packages=external && node scripts/copy-templates.mjs",
     "lint": "eslint .",
     "generate-vapid-keys": "npm exec --workspace server -- web-push generate-vapid-keys",
     "test": "vitest run"

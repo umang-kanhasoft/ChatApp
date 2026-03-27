@@ -120,7 +120,14 @@ export const leaveUserFromAllActiveGroupCalls = async ({ userId }) => {
       session.endedAt = new Date();
     }
 
-    await session.save();
+    try {
+      await session.save();
+    } catch (error) {
+      if (error?.name !== 'VersionError') {
+        throw error;
+      }
+    }
+
     const populated = await populateSession(GroupCallSession.findById(session.id));
     if (populated) {
       updatedSessions.push(populated);

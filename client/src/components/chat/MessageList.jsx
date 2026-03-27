@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import dayjs from 'dayjs';
 import { Virtuoso } from 'react-virtuoso';
+import { getReceiptSummary } from '../../utils/messageReceipts.js';
 
 const renderMedia = (message) => {
   const url = message.content?.mediaUrl;
@@ -71,14 +72,14 @@ export default function MessageList({
 
   const headerComponent = nextCursor || loadingOlder
     ? () => (
-        <div className="message-list-header">
-          <span className="message-list-header-text">
-            {loadingOlder
-              ? 'Loading older messages...'
-              : 'Scroll to top to load older messages'}
-          </span>
-        </div>
-      )
+      <div className="message-list-header">
+        <span className="message-list-header-text">
+          {loadingOlder
+            ? 'Loading older messages...'
+            : 'Scroll to top to load older messages'}
+        </span>
+      </div>
+    )
     : undefined;
 
   return (
@@ -94,11 +95,10 @@ export default function MessageList({
       itemContent={(_, message) => {
         const isOwn = message.sender?._id === currentUserId || message.sender === currentUserId;
         const senderName = message.sender?.displayName || message.sender?.username || 'You';
-        const deliveredCount = (message.deliveredTo || []).length;
-        const readCount = (message.readBy || []).length;
-        const peers = Math.max(participantCount - 1, 1);
-        const readByAllPeers = readCount - 1 >= peers;
-        const deliveredToAllPeers = deliveredCount - 1 >= peers;
+        const { readByAllPeers, deliveredToAllPeers } = getReceiptSummary(
+          message,
+          participantCount,
+        );
         const isStarred = isStarredByUser(message, currentUserId);
         const isPinned = Boolean(message.pinnedAt);
         const poll = message.type === 'poll' ? message.content?.poll : null;
@@ -174,15 +174,13 @@ export default function MessageList({
                         );
                       })}
                       <p className="message-poll-meta">
-                        {`${totalPollVotes} vote${totalPollVotes === 1 ? '' : 's'} · ${
-                          poll.allowMultipleChoice ? 'Multiple choice' : 'Single choice'
-                        }`}
+                        {`${totalPollVotes} vote${totalPollVotes === 1 ? '' : 's'} · ${poll.allowMultipleChoice ? 'Multiple choice' : 'Single choice'
+                          }`}
                         {pollExpiryDate
-                          ? ` · ${
-                              isPollClosed
-                                ? 'Poll closed'
-                                : `Ends ${dayjs(pollExpiryDate).format('MMM D, HH:mm')}`
-                            }`
+                          ? ` · ${isPollClosed
+                            ? 'Poll closed'
+                            : `Ends ${dayjs(pollExpiryDate).format('MMM D, HH:mm')}`
+                          }`
                           : ''}
                       </p>
                       {totalPollVotes > 0 ? (

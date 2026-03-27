@@ -13,7 +13,7 @@ const refreshTokenSchema = new mongoose.Schema(
     },
     userAgent: { type: String, default: '' },
     ip: { type: String, default: '' },
-    expiresAt: { type: Date, required: true },
+    expiresAt: { type: Date, default: null },
     createdAt: { type: Date, default: Date.now },
     lastUsedAt: { type: Date, default: Date.now },
     rotatedAt: { type: Date, default: null },

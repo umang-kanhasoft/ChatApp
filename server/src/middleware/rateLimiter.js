@@ -1,16 +1,24 @@
-import rateLimit from 'express-rate-limit';
+import rateLimit, { MemoryStore } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 
 const windowMs = 15 * 60 * 1000;
 const authWindowMs = 10 * 60 * 1000;
 const otpWindowMs = 10 * 60 * 1000;
+const resettableStores = new Set();
 
-const buildStore = (redis) =>
-  redis
+const buildStore = (redis) => {
+  const store = redis
     ? new RedisStore({
         sendCommand: (...args) => redis.call(...args),
       })
-    : undefined;
+    : new MemoryStore();
+
+  if (typeof store?.resetAll === 'function') {
+    resettableStores.add(store);
+  }
+
+  return store;
+};
 
 const createLimiter = ({ redis, keyPrefix, limitWindowMs, max, message, code }) =>
   rateLimit({
@@ -62,3 +70,15 @@ export const createOtpLimiter = (redis = null) =>
     message: 'Too many OTP requests',
     code: 'OTP_RATE_LIMITED',
   });
+
+export const resetRateLimiters = async () => {
+  await Promise.all(
+    [...resettableStores].map(async (store) => {
+      try {
+        await store.resetAll();
+      } catch {
+        // Ignore reset failures in non-memory stores.
+      }
+    }),
+  );
+};

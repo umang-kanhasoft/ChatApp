@@ -7,13 +7,19 @@ mongoose.set('strictQuery', true);
 
 let memoryMongo = null;
 
+const LOCAL_MONGO_HOST_PATTERN =
+  /^mongodb:\/\/(?:(?:[^@/]+)@)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|host\.docker\.internal)(?::\d+)?(?:[/?]|$)/i;
+
 const mongoOptions = {
-  maxPoolSize: 20,
-  minPoolSize: 2,
+  maxPoolSize: env.MONGODB_MAX_POOL_SIZE,
+  minPoolSize: env.MONGODB_MIN_POOL_SIZE,
   serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: env.MONGODB_SOCKET_TIMEOUT_MS,
 };
 
-const canUseMemoryFallback = env.NODE_ENV !== 'production' && env.MONGODB_FALLBACK_TO_MEMORY;
+const isLocalMongoUri = (uri) => LOCAL_MONGO_HOST_PATTERN.test(String(uri || '').trim());
+const canUseMemoryFallback =
+  env.NODE_ENV === 'test' || (env.NODE_ENV !== 'production' && env.MONGODB_FALLBACK_TO_MEMORY && isLocalMongoUri(env.MONGODB_URI));
 
 const connectWithUri = async (uri) => {
   await mongoose.connect(uri, mongoOptions);
@@ -34,6 +40,11 @@ export const connectMongo = async () => {
     await connectWithUri(env.MONGODB_URI);
   } catch (error) {
     if (!canUseMemoryFallback) {
+      if (env.MONGODB_FALLBACK_TO_MEMORY && !isLocalMongoUri(env.MONGODB_URI)) {
+        logger.error('refusing in-memory Mongo fallback for non-local database URI', {
+          mongoUri: env.MONGODB_URI,
+        });
+      }
       throw error;
     }
 

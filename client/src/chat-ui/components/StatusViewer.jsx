@@ -21,7 +21,8 @@ export default function StatusViewer({ status, onClose, onReply }) {
   }, [onClose]);
 
   return (
-    <div style={styles.container} onClick={onClose}>
+    <div style={styles.container} data-testid="status-viewer" onClick={onClose}>
+      <div style={styles.viewerContent} onClick={(event) => event.stopPropagation()}>
       <div style={styles.progressContainer}>
         <div style={styles.progressTrack}>
           <div style={{ ...styles.progressFill, width: `${progress}%` }} />
@@ -35,7 +36,7 @@ export default function StatusViewer({ status, onClose, onReply }) {
           <span style={styles.name}>{status.contact.name}</span>
           <span style={styles.time}>{status.time}</span>
         </div>
-        <button style={styles.closeBtn} onClick={onClose}>
+        <button style={styles.closeBtn} data-testid="status-close-button" onClick={onClose}>
           ✕
         </button>
       </div>
@@ -59,12 +60,14 @@ export default function StatusViewer({ status, onClose, onReply }) {
             type="text"
             placeholder="Reply"
             style={styles.replyField}
+            data-testid="status-reply-input"
             value={replyText}
             onChange={(event) => setReplyText(event.target.value)}
           />
         </div>
         <button
           style={styles.sendIcon}
+          data-testid="status-reply-send"
           onClick={(event) => {
             event.stopPropagation();
             if (!replyText.trim()) return;
@@ -77,6 +80,7 @@ export default function StatusViewer({ status, onClose, onReply }) {
             <path d="M2.01 3 2 8.99l13 1.01-13 1.01L2.01 17 20 10z" />
           </svg>
         </button>
+      </div>
       </div>
     </div>
   );
@@ -94,6 +98,11 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     animation: 'fadeIn 0.3s ease',
+  },
+  viewerContent: {
+    display: 'flex',
+    flex: 1,
+    flexDirection: 'column',
   },
   progressContainer: { padding: '12px 8px 0', paddingTop: 'max(12px, env(safe-area-inset-top))' },
   progressTrack: { height: 2, background: 'rgba(255,255,255,0.3)', borderRadius: 1, overflow: 'hidden' },

@@ -5,6 +5,7 @@ import { bumpConversationListVersions } from '../../services/conversationCacheSe
 import {
   assertNotBlockedInConversation,
   ensureConversationMember,
+  listUserConversationJoinRoomIds,
   listUserConversationRoomIds,
 } from '../../services/conversationService.js';
 import {
@@ -35,6 +36,8 @@ import {
   toggleReaction,
 } from '../../services/messageService.js';
 import { logger } from '../../utils/logger.js';
+import { trackSocketRateLimited } from '../../utils/metrics.js';
+import { consumeSocketEventRateLimit } from '../socketRateLimit.js';
 
 const joinSchema = z.object({
   conversationId: z.string().min(1),
@@ -208,6 +211,30 @@ const enqueuePush = (payload) => {
   });
 };
 
+const enforceSocketRateLimit = async ({ socket, eventName, ack, silent = false }) => {
+  const limitResult = await consumeSocketEventRateLimit({
+    userId: socket.user.id,
+    socketId: socket.id,
+    eventName,
+  });
+
+  if (limitResult.allowed) {
+    return true;
+  }
+
+  trackSocketRateLimited(eventName);
+
+  if (!silent) {
+    ack?.({
+      ok: false,
+      error: 'Rate limit exceeded',
+      retryAfterMs: Math.max(0, Number(limitResult.retryAfterMs) || 0),
+    });
+  }
+
+  return false;
+};
+
 export const registerChatHandlers = ({ io, socket }) => {
   const userId = socket.user.id;
 
@@ -227,10 +254,12 @@ export const registerChatHandlers = ({ io, socket }) => {
         userId,
       });
 
-      io.to(room).emit('message:read-update', {
-        conversationId: parsed.data.conversationId,
-        ...receipt,
-      });
+      if (receipt.lastReadMessageId || receipt.lastDeliveredMessageId) {
+        io.to(room).emit('message:read-update', {
+          conversationId: parsed.data.conversationId,
+          ...receipt,
+        });
+      }
       ack?.({ ok: true, room });
     } catch {
       ack?.({ ok: false, error: 'Not authorized for this conversation' });
@@ -245,33 +274,42 @@ export const registerChatHandlers = ({ io, socket }) => {
     }
 
     try {
-      let cursor = parsed.data.cursor || null;
-      let joinedCount = 0;
-      const batchSize = parsed.data.limit || env.SOCKET_JOIN_ALL_BATCH_SIZE;
+      if (!(await enforceSocketRateLimit({ socket, eventName: 'conversation:join-all', ack }))) {
+        return;
+      }
 
-      while (true) {
+      if (parsed.data.cursor) {
         const page = await listUserConversationRoomIds({
           userId,
-          limit: batchSize,
-          cursor,
+          limit: parsed.data.limit || env.SOCKET_JOIN_ALL_BATCH_SIZE,
+          cursor: parsed.data.cursor,
         });
 
-        if (page.items.length === 0) {
-          ack?.({ ok: true, count: joinedCount, complete: true, nextCursor: null });
-          return;
+        if (page.items.length > 0) {
+          await socket.join(page.items.map((conversationId) => `conversation:${conversationId}`));
         }
 
-        await socket.join(page.items.map((conversationId) => `conversation:${conversationId}`));
-        joinedCount += page.items.length;
+        ack?.({
+          ok: true,
+          count: page.items.length,
+          complete: !page.nextCursor,
+          nextCursor: page.nextCursor || null,
+        });
+        return;
+      }
 
-        if (!page.nextCursor) {
-          ack?.({ ok: true, count: joinedCount, complete: true, nextCursor: null });
-          return;
+      const roomIds = await listUserConversationJoinRoomIds({ userId });
+      const batchSize = parsed.data.limit || env.SOCKET_JOIN_ALL_BATCH_SIZE;
+
+      for (let index = 0; index < roomIds.length; index += batchSize) {
+        const batch = roomIds.slice(index, index + batchSize);
+        if (batch.length > 0) {
+          await socket.join(batch.map((conversationId) => `conversation:${conversationId}`));
         }
-
-        cursor = page.nextCursor;
         await yieldToEventLoop();
       }
+
+      ack?.({ ok: true, count: roomIds.length, complete: true, nextCursor: null });
     } catch {
       ack?.({ ok: false, error: 'Failed to join conversations' });
     }
@@ -285,6 +323,10 @@ export const registerChatHandlers = ({ io, socket }) => {
     }
 
     try {
+      if (!(await enforceSocketRateLimit({ socket, eventName: 'message:send', ack }))) {
+        return;
+      }
+
       const conversation = await ensureConversationMember(parsed.data.conversationId, userId);
       await assertNotBlockedInConversation({ conversation, senderId: userId });
 
@@ -338,6 +380,10 @@ export const registerChatHandlers = ({ io, socket }) => {
     if (!parsed.success) return;
 
     try {
+      if (!(await enforceSocketRateLimit({ socket, eventName: 'typing:start', silent: true }))) {
+        return;
+      }
+
       await ensureConversationMember(parsed.data.conversationId, userId);
       const room = `conversation:${parsed.data.conversationId}`;
       socket.to(room).emit('typing:update', {
@@ -356,6 +402,10 @@ export const registerChatHandlers = ({ io, socket }) => {
     if (!parsed.success) return;
 
     try {
+      if (!(await enforceSocketRateLimit({ socket, eventName: 'typing:stop', silent: true }))) {
+        return;
+      }
+
       await ensureConversationMember(parsed.data.conversationId, userId);
       const room = `conversation:${parsed.data.conversationId}`;
       socket.to(room).emit('typing:update', {
@@ -544,15 +594,19 @@ export const registerChatHandlers = ({ io, socket }) => {
     }
 
     try {
+      if (!(await enforceSocketRateLimit({ socket, eventName: 'message:delivered', ack }))) {
+        return;
+      }
+
       await ensureConversationMember(parsed.data.conversationId, userId);
-      const message = await markMessageDelivered({
+      const delivery = await markMessageDelivered({
         conversationId: parsed.data.conversationId,
         messageId: parsed.data.messageId,
         userId,
       });
 
-      if (message) {
-        io.to(`conversation:${parsed.data.conversationId}`).emit('message:update', message);
+      if (delivery?.lastDeliveredMessageId) {
+        io.to(`conversation:${parsed.data.conversationId}`).emit('message:delivery-update', delivery);
       }
       ack?.({ ok: true });
     } catch {
@@ -568,16 +622,22 @@ export const registerChatHandlers = ({ io, socket }) => {
     }
 
     try {
+      if (!(await enforceSocketRateLimit({ socket, eventName: 'message:read', ack }))) {
+        return;
+      }
+
       await ensureConversationMember(parsed.data.conversationId, userId);
       const receipt = await markConversationRead({
         conversationId: parsed.data.conversationId,
         userId,
       });
 
-      io.to(`conversation:${parsed.data.conversationId}`).emit('message:read-update', {
-        conversationId: parsed.data.conversationId,
-        ...receipt,
-      });
+      if (receipt.lastReadMessageId || receipt.lastDeliveredMessageId) {
+        io.to(`conversation:${parsed.data.conversationId}`).emit('message:read-update', {
+          conversationId: parsed.data.conversationId,
+          ...receipt,
+        });
+      }
       await bumpConversationListVersions({
         userIds: [userId],
       });
@@ -719,6 +779,10 @@ export const registerChatHandlers = ({ io, socket }) => {
     }
 
     try {
+      if (!(await enforceSocketRateLimit({ socket, eventName: 'call:signal', ack }))) {
+        return;
+      }
+
       const call = await getCallLogById({ callId: parsed.data.callId });
       if (!isCallParticipant(call, userId)) {
         ack?.({ ok: false, error: 'Not authorized for this call' });
@@ -943,6 +1007,10 @@ export const registerChatHandlers = ({ io, socket }) => {
     }
 
     try {
+      if (!(await enforceSocketRateLimit({ socket, eventName: 'group-call:signal', ack }))) {
+        return;
+      }
+
       const session = await getGroupCallSessionById({ sessionId: parsed.data.sessionId });
       if (!session || session.status !== 'active') {
         ack?.({ ok: false, error: 'Group call is no longer active' });

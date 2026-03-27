@@ -2,6 +2,7 @@ import request from 'supertest';
 import bcrypt from 'bcryptjs';
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../app.js';
+import { Conversation } from '../models/Conversation.js';
 import { Message } from '../models/Message.js';
 import { OtpCode } from '../models/OtpCode.js';
 import { User } from '../models/User.js';
@@ -150,6 +151,12 @@ describe('auth and messaging release flows', () => {
       .post('/api/auth/otp/email/request')
       .send({ email: 'alice@example.com' });
 
+    if (process.env.TEST_OTP_CODE) {
+      expect(response.status).toBe(200);
+      expect(response.body.data.sent).toBe(true);
+      return;
+    }
+
     expect(response.status).toBe(503);
     expect(response.body.error.code).toBe('EMAIL_OTP_UNAVAILABLE');
   });
@@ -212,15 +219,13 @@ describe('auth and messaging release flows', () => {
     expect(firstReadResponse.status).toBe(200);
     expect(secondReadResponse.status).toBe(200);
 
-    const refreshedMessage = await Message.findById(firstMessageResponse.body.data._id).lean();
-    const bobReadEntries = (refreshedMessage.readBy || []).filter(
-      (entry) => String(entry.user) === String(bobRegister.body.data.user.id),
-    );
-    const bobDeliveredEntries = (refreshedMessage.deliveredTo || []).filter(
+    const refreshedConversation = await Conversation.findById(conversationId).lean();
+    const bobParticipant = (refreshedConversation.participants || []).find(
       (entry) => String(entry.user) === String(bobRegister.body.data.user.id),
     );
 
-    expect(bobReadEntries).toHaveLength(1);
-    expect(bobDeliveredEntries).toHaveLength(1);
+    expect(String(bobParticipant.lastReadMessage)).toBe(firstMessageResponse.body.data._id);
+    expect(String(bobParticipant.lastDeliveredMessage)).toBe(firstMessageResponse.body.data._id);
+    expect(bobParticipant.unreadCount).toBe(0);
   });
 });

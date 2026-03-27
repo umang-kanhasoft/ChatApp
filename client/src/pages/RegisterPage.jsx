@@ -71,13 +71,14 @@ export default function RegisterPage() {
 
   return (
     <div className="phone-login">
-      <form className="phone-card" onSubmit={handleSubmit(onSubmit)}>
+      <form className="phone-card" data-testid="register-form" onSubmit={handleSubmit(onSubmit)}>
         <h1>Create your account</h1>
         <p className="phone-sub">We’ll verify your phone to get started.</p>
 
         <div className="country-select">
           <select
             value={selectedCountry.code}
+            data-testid="register-country-select"
             onChange={(event) => {
               const next = COUNTRY_LIST.find((country) => country.code === event.target.value);
               if (next) setSelectedCountry(next);
@@ -100,6 +101,7 @@ export default function RegisterPage() {
             type="text"
             className="phone-input"
             placeholder="Display name"
+            data-testid="register-display-name-input"
             {...register('displayName')}
             autoComplete="name"
           />
@@ -112,6 +114,7 @@ export default function RegisterPage() {
             type="tel"
             className="phone-input"
             placeholder="Phone number"
+            data-testid="register-phone-input"
             {...register('phone')}
             autoComplete="tel"
           />
@@ -120,13 +123,25 @@ export default function RegisterPage() {
 
         <label className="phone-row">
           <span className="dial-code">@</span>
-          <input type="text" className="phone-input" placeholder="Username" {...register('username')} />
+          <input
+            type="text"
+            className="phone-input"
+            placeholder="Username"
+            data-testid="register-username-input"
+            {...register('username')}
+          />
         </label>
         {errors.username ? <span className="error-text">{errors.username.message}</span> : null}
 
         <label className="phone-row">
           <span className="dial-code">✉</span>
-          <input type="email" className="phone-input" placeholder="Email" {...register('email')} />
+          <input
+            type="email"
+            className="phone-input"
+            placeholder="Email"
+            data-testid="register-email-input"
+            {...register('email')}
+          />
         </label>
         {errors.email ? <span className="error-text">{errors.email.message}</span> : null}
 
@@ -136,18 +151,19 @@ export default function RegisterPage() {
             type="password"
             className="phone-input"
             placeholder="Password"
+            data-testid="register-password-input"
             {...register('password')}
             autoComplete="new-password"
           />
         </label>
         {errors.password ? <span className="error-text">{errors.password.message}</span> : null}
 
-        <button type="submit" disabled={registerMutation.isPending}>
+        <button type="submit" data-testid="register-submit" disabled={registerMutation.isPending}>
           {registerMutation.isPending ? 'Creating…' : 'Create account'}
         </button>
 
         {registerMutation.error ? (
-          <p className="error-text">
+          <p className="error-text" data-testid="register-error">
             {registerMutation.error.response?.data?.error?.message || 'Registration failed'}
           </p>
         ) : null}

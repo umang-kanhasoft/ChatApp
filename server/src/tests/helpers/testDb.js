@@ -1,6 +1,6 @@
-import mongoose from 'mongoose';
 import { afterAll, afterEach, beforeAll } from 'vitest';
 import { connectMongo, disconnectMongo } from '../../config/db.js';
+import { resetQaState } from '../../testing/fixtures.js';
 
 export const useMongoTestDb = () => {
   beforeAll(async () => {
@@ -8,9 +8,7 @@ export const useMongoTestDb = () => {
   });
 
   afterEach(async () => {
-    if (mongoose.connection.readyState === 1) {
-      await mongoose.connection.db.dropDatabase();
-    }
+    await resetQaState();
   });
 
   afterAll(async () => {

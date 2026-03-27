@@ -9,7 +9,10 @@ import moderationRoutes from './moderationRoutes.js';
 import { getQueueHealth } from '../queues/runtime.js';
 import statusRoutes from './statusRoutes.js';
 import { instanceId } from '../utils/instance.js';
+import { isShuttingDown } from '../utils/lifecycle.js';
 import userRoutes from './userRoutes.js';
+import { env } from '../config/env.js';
+import testRoutes from './testRoutes.js';
 
 export const createApiRoutes = ({ redisClient = null } = {}) => {
   const router = Router();
@@ -46,7 +49,10 @@ export const createApiRoutes = ({ redisClient = null } = {}) => {
     const redis = getRedisHealth();
     const queues = getQueueHealth();
     const ready =
-      mongoose.connection.readyState === 1 && (!redis.required || redis.connected) && (!redis.required || queues.enabled);
+      !isShuttingDown() &&
+      mongoose.connection.readyState === 1 &&
+      (!redis.required || redis.connected) &&
+      (!redis.required || queues.enabled);
 
     res.status(ready ? 200 : 503).json({
       success: ready,
@@ -54,6 +60,7 @@ export const createApiRoutes = ({ redisClient = null } = {}) => {
         status: ready ? 'ready' : 'not_ready',
         instanceId,
         timestamp: new Date().toISOString(),
+        draining: isShuttingDown(),
         dependencies: {
           mongo,
           redis,
@@ -69,6 +76,9 @@ export const createApiRoutes = ({ redisClient = null } = {}) => {
   router.use('/status', statusRoutes);
   router.use('/users', userRoutes);
   router.use('/moderation', moderationRoutes);
+  if (env.NODE_ENV === 'test') {
+    router.use('/test', testRoutes);
+  }
 
   return router;
 };

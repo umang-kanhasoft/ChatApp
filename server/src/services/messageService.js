@@ -1,9 +1,9 @@
 import sanitizeHtml from 'sanitize-html';
 import { StatusCodes } from 'http-status-codes';
 import mongoose from 'mongoose';
-import { env } from '../config/env.js';
 import { Message } from '../models/Message.js';
 import { Conversation } from '../models/Conversation.js';
+import { attachReceiptSummaryToMessage } from './messageReceiptService.js';
 import { ApiError } from '../utils/ApiError.js';
 import { decodeCursor, encodeCursor } from '../utils/pagination.js';
 
@@ -107,15 +107,53 @@ const sanitizeForViewer = (messageDoc, viewerId) => {
   return message;
 };
 
-const populateMessage = (messageId) =>
-  Message.findById(messageId)
+const applyMessagePopulate = (query) =>
+  query
     .populate('sender', 'username displayName avatar')
     .populate('content.poll.options.votes', 'username displayName avatar')
     .populate({
       path: 'replyTo',
       select: 'content type sender',
       populate: { path: 'sender', select: 'username displayName avatar' },
-    });
+    })
+    .lean();
+
+const loadConversationReceiptState = (conversationId) =>
+  Conversation.findById(conversationId)
+    .select('participants.user participants.lastDeliveredAt participants.lastReadAt')
+    .lean();
+
+const attachReceiptSummary = ({ message, participants }) =>
+  attachReceiptSummaryToMessage({
+    message,
+    participants,
+  });
+
+const decorateMessagesForViewer = ({ messages, viewerId, participants }) =>
+  (messages || [])
+    .map((message) =>
+      sanitizeForViewer(
+        attachReceiptSummary({
+          message,
+          participants,
+        }),
+        viewerId,
+      ),
+    )
+    .filter(Boolean);
+
+const populateMessage = async (messageId) => {
+  const message = await applyMessagePopulate(Message.findById(messageId));
+  if (!message) {
+    return null;
+  }
+
+  const conversation = await loadConversationReceiptState(message.conversation);
+  return attachReceiptSummary({
+    message,
+    participants: conversation?.participants || [],
+  });
+};
 
 export const listMessages = async ({ conversationId, userId, limit = 30, cursor }) => {
   const cursorDate = decodeCursor(cursor);
@@ -128,21 +166,23 @@ export const listMessages = async ({ conversationId, userId, limit = 30, cursor 
     query.createdAt = { $lt: cursorDate };
   }
 
-  const items = await Message.find(query)
-    .sort({ createdAt: -1, _id: -1 })
-    .limit(limit + 1)
-    .populate('sender', 'username displayName avatar')
-    .populate('content.poll.options.votes', 'username displayName avatar')
-    .populate({
-      path: 'replyTo',
-      select: 'content type sender',
-      populate: { path: 'sender', select: 'username displayName avatar' },
-    });
+  const [items, conversation] = await Promise.all([
+    applyMessagePopulate(
+      Message.find(query)
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(limit + 1),
+    ),
+    loadConversationReceiptState(conversationId),
+  ]);
 
   const hasMore = items.length > limit;
   const pageItems = hasMore ? items.slice(0, limit) : items;
   const ordered = pageItems.reverse();
-  const visible = ordered.map((message) => sanitizeForViewer(message, userId)).filter(Boolean);
+  const visible = decorateMessagesForViewer({
+    messages: ordered,
+    viewerId: userId,
+    participants: conversation?.participants || [],
+  });
   const oldest = ordered[0];
 
   return {
@@ -166,10 +206,12 @@ export const createMessage = async ({
       conversation: conversationId,
       sender: senderId,
       clientMessageId,
-    });
+    })
+      .select('_id')
+      .lean();
 
-    if (existing) {
-      return populateMessage(existing.id);
+    if (existing?._id) {
+      return populateMessage(existing._id);
     }
   }
 
@@ -236,28 +278,30 @@ export const createMessage = async ({
     throw error;
   }
 
-  await Conversation.findByIdAndUpdate(conversationId, {
-    $set: {
-      lastMessage: message.id,
-      lastActivityAt: new Date(),
-    },
-  });
-
-  await Conversation.updateOne(
-    { _id: conversationId },
-    {
-      $inc: {
-        'participants.$[participant].unreadCount': 1,
+  const activityAt = message.createdAt || new Date();
+  await Promise.all([
+    Conversation.findByIdAndUpdate(conversationId, {
+      $set: {
+        lastMessage: message.id,
+        lastActivityAt: activityAt,
       },
-    },
-    {
-      arrayFilters: [
-        {
-          'participant.user': { $ne: new mongoose.Types.ObjectId(senderId) },
+    }),
+    Conversation.updateOne(
+      { _id: conversationId },
+      {
+        $inc: {
+          'participants.$[participant].unreadCount': 1,
         },
-      ],
-    },
-  );
+      },
+      {
+        arrayFilters: [
+          {
+            'participant.user': { $ne: new mongoose.Types.ObjectId(senderId) },
+          },
+        ],
+      },
+    ),
+  ]);
 
   return populateMessage(message.id);
 };
@@ -623,140 +667,154 @@ export const votePollOption = async ({ conversationId, messageId, userId, option
   return populateMessage(message.id);
 };
 
-const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
 export const searchMessages = async ({ conversationId, userId, query, limit = 30 }) => {
-  const regex = new RegExp(escapeRegex(query), 'i');
+  const normalizedQuery = sanitizeText(query);
+  if (!normalizedQuery) {
+    return [];
+  }
 
-  const items = await Message.find({
-    conversation: conversationId,
-    deletedForEveryone: { $ne: true },
-    deletedFor: { $ne: userId },
-    'content.text': regex,
-  })
-    .sort({ createdAt: -1, _id: -1 })
-    .limit(limit)
-    .populate('sender', 'username displayName avatar')
-    .populate('content.poll.options.votes', 'username displayName avatar')
-    .populate({
-      path: 'replyTo',
-      select: 'content type sender',
-      populate: { path: 'sender', select: 'username displayName avatar' },
-    });
+  const [items, conversation] = await Promise.all([
+    applyMessagePopulate(
+      Message.find(
+        {
+          conversation: conversationId,
+          deletedForEveryone: { $ne: true },
+          deletedFor: { $ne: userId },
+          $text: { $search: normalizedQuery },
+        },
+        {
+          score: { $meta: 'textScore' },
+        },
+      )
+        .sort({ score: { $meta: 'textScore' }, createdAt: -1, _id: -1 })
+        .limit(limit),
+    ),
+    loadConversationReceiptState(conversationId),
+  ]);
 
-  return items.map((message) => sanitizeForViewer(message, userId)).filter(Boolean);
+  return decorateMessagesForViewer({
+    messages: items,
+    viewerId: userId,
+    participants: conversation?.participants || [],
+  });
 };
 
 export const markMessageDelivered = async ({ conversationId, messageId, userId }) => {
-  const existing = await Message.findOne({
-    _id: messageId,
-    conversation: conversationId,
-    deletedForEveryone: { $ne: true },
-    deletedFor: { $ne: userId },
-  });
-
-  if (!existing) return null;
-
-  if (toObjectIdString(existing.sender) === toObjectIdString(userId)) {
-    return null;
-  }
-
-  const updateResult = await Message.updateOne(
-    {
+  const [message, membership] = await Promise.all([
+    Message.findOne({
       _id: messageId,
       conversation: conversationId,
       deletedForEveryone: { $ne: true },
       deletedFor: { $ne: userId },
-      sender: { $ne: userId },
-      'deliveredTo.user': { $ne: userId },
-    },
-    {
-      $push: {
-        deliveredTo: { user: userId, at: new Date() },
-      },
-    },
-  );
+    })
+      .select('_id sender createdAt')
+      .lean(),
+    Conversation.findOne({
+      _id: conversationId,
+      'participants.user': userId,
+    })
+      .select({ 'participants.$': 1 })
+      .lean(),
+  ]);
 
-  if (updateResult.modifiedCount === 0) {
+  if (!message) return null;
+
+  if (toObjectIdString(message.sender) === toObjectIdString(userId)) {
     return null;
   }
 
-  return populateMessage(existing.id);
-};
+  const participant = membership?.participants?.[0];
+  if (!participant) {
+    return null;
+  }
 
-export const markConversationRead = async ({ conversationId, userId }) => {
-  const now = new Date();
-  const emittedMessageIds = [];
-  let lastReadMessageId = null;
-  let hasMoreUpdated = false;
-
-  while (true) {
-    const messagesToMark = await Message.find({
-      conversation: conversationId,
-      sender: { $ne: userId },
-      deletedForEveryone: { $ne: true },
-      deletedFor: { $ne: userId },
-      'readBy.user': { $ne: userId },
-    })
-      .sort({ createdAt: -1, _id: -1 })
-      .limit(env.READ_RECEIPT_BATCH_SIZE)
-      .select('_id');
-
-    if (messagesToMark.length === 0) {
-      break;
-    }
-
-    const batchIds = messagesToMark.map((message) => message._id);
-    if (!lastReadMessageId && batchIds[0]) {
-      lastReadMessageId = batchIds[0];
-    }
-
-    const remainingEmitCapacity = env.READ_RECEIPT_EMIT_MAX_IDS - emittedMessageIds.length;
-    if (remainingEmitCapacity > 0) {
-      emittedMessageIds.push(...batchIds.slice(0, remainingEmitCapacity));
-    } else {
-      hasMoreUpdated = true;
-    }
-
-    await Message.bulkWrite(
-      batchIds.map((id) => ({
-        updateOne: {
-          filter: {
-            _id: id,
-            'readBy.user': { $ne: userId },
-          },
-          update: {
-            $push: {
-              readBy: { user: userId, at: now },
-              deliveredTo: { user: userId, at: now },
-            },
-          },
-        },
-      })),
-    );
-
-    if (messagesToMark.length < env.READ_RECEIPT_BATCH_SIZE) {
-      break;
-    }
-
-    hasMoreUpdated = true;
+  const currentDeliveredAt = participant.lastDeliveredAt ? new Date(participant.lastDeliveredAt) : null;
+  const messageCreatedAt = new Date(message.createdAt);
+  if (currentDeliveredAt && currentDeliveredAt.getTime() >= messageCreatedAt.getTime()) {
+    return null;
   }
 
   await Conversation.updateOne(
     { _id: conversationId, 'participants.user': userId },
     {
       $set: {
-        'participants.$.unreadCount': 0,
-        ...(lastReadMessageId ? { 'participants.$.lastReadMessage': lastReadMessageId } : {}),
-        lastActivityAt: new Date(),
+        'participants.$.lastDeliveredMessage': message._id,
+        'participants.$.lastDeliveredAt': messageCreatedAt,
       },
     },
   );
 
   return {
-    messageIds: emittedMessageIds.map((id) => toObjectIdString(id)),
+    conversationId: toObjectIdString(conversationId),
+    userId: toObjectIdString(userId),
+    lastDeliveredMessageId: toObjectIdString(message._id),
+    at: new Date().toISOString(),
+  };
+};
+
+export const markConversationRead = async ({ conversationId, userId }) => {
+  const now = new Date();
+  const [latestUnreadMessage, membership] = await Promise.all([
+    Message.findOne({
+      conversation: conversationId,
+      sender: { $ne: userId },
+      deletedForEveryone: { $ne: true },
+      deletedFor: { $ne: userId },
+    })
+      .sort({ createdAt: -1, _id: -1 })
+      .select('_id createdAt')
+      .lean(),
+    Conversation.findOne({
+      _id: conversationId,
+      'participants.user': userId,
+    })
+      .select({ 'participants.$': 1 })
+      .lean(),
+  ]);
+
+  const participant = membership?.participants?.[0];
+  if (!participant) {
+    return {
+      userId: toObjectIdString(userId),
+      at: now.toISOString(),
+      lastReadMessageId: null,
+      lastDeliveredMessageId: null,
+    };
+  }
+
+  const currentReadAt = participant.lastReadAt ? new Date(participant.lastReadAt) : null;
+  const currentDeliveredAt = participant.lastDeliveredAt ? new Date(participant.lastDeliveredAt) : null;
+  const nextMessageCreatedAt = latestUnreadMessage?.createdAt ? new Date(latestUnreadMessage.createdAt) : null;
+  const shouldAdvanceRead =
+    latestUnreadMessage &&
+    (!currentReadAt || currentReadAt.getTime() < nextMessageCreatedAt.getTime());
+  const shouldAdvanceDelivered =
+    latestUnreadMessage &&
+    (!currentDeliveredAt || currentDeliveredAt.getTime() < nextMessageCreatedAt.getTime());
+
+  const updatePayload = {
+    'participants.$.unreadCount': 0,
+  };
+
+  if (shouldAdvanceRead) {
+    updatePayload['participants.$.lastReadMessage'] = latestUnreadMessage._id;
+    updatePayload['participants.$.lastReadAt'] = nextMessageCreatedAt;
+  }
+
+  if (shouldAdvanceDelivered) {
+    updatePayload['participants.$.lastDeliveredMessage'] = latestUnreadMessage._id;
+    updatePayload['participants.$.lastDeliveredAt'] = nextMessageCreatedAt;
+  }
+
+  await Conversation.updateOne(
+    { _id: conversationId, 'participants.user': userId },
+    { $set: updatePayload },
+  );
+
+  return {
     userId: toObjectIdString(userId),
     at: now.toISOString(),
-    hasMoreUpdated,
+    lastReadMessageId: shouldAdvanceRead ? toObjectIdString(latestUnreadMessage._id) : null,
+    lastDeliveredMessageId: shouldAdvanceDelivered ? toObjectIdString(latestUnreadMessage._id) : null,
   };
 };

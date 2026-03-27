@@ -60,7 +60,7 @@ export default function ChatsTab({
             <button style={styles.iconBtn}>
               <Icons.Camera />
             </button>
-            <button style={styles.iconBtn} onClick={() => setShowNewChat(true)}>
+            <button style={styles.iconBtn} data-testid="new-chat-button" onClick={() => setShowNewChat(true)}>
               <Icons.Edit />
             </button>
           </div>
@@ -100,7 +100,7 @@ export default function ChatsTab({
         <span style={styles.archivedCount}>3</span>
       </div>
 
-      <div style={styles.chatList}>
+      <div style={styles.chatList} data-testid="chat-list">
         {[...pinnedChats, ...regularChats].map((chat) => (
           <div key={chat.id} style={styles.chatItemWrapper}>
             {swipedChat === chat.id ? (
@@ -111,6 +111,7 @@ export default function ChatsTab({
               </div>
             ) : null}
             <div
+              data-testid={`chat-item-${chat.id}`}
               style={{
                 ...styles.chatItem,
                 transform: swipedChat === chat.id ? 'translateX(-200px)' : 'translateX(0)',
@@ -186,6 +187,7 @@ export default function ChatsTab({
               <input
                 type="text"
                 placeholder="Search name or number"
+                data-testid="new-chat-search-input"
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
                 onKeyDown={(event) => {

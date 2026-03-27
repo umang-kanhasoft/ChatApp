@@ -46,6 +46,7 @@ export default function ChatUiApp({
   onAddStatus,
   onNewCall,
   onCreateCallLink,
+  onLogout,
   callOverlay = null,
   settingsVersion = 'WhatsApp Clone',
 }) {
@@ -117,7 +118,7 @@ export default function ChatUiApp({
           />
         );
       case 'settings':
-        return <SettingsTab currentUser={currentUser} versionLabel={settingsVersion} />;
+        return <SettingsTab currentUser={currentUser} onLogout={onLogout} versionLabel={settingsVersion} />;
       default:
         return (
           <ChatsTab

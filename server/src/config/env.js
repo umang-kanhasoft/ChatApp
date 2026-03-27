@@ -17,6 +17,9 @@ const envSchema = z.object({
   CLIENT_URL: z.string().url().default('http://localhost:5173'),
   CLIENT_URLS: z.string().optional().default(''),
   MONGODB_URI: z.string().min(1).default('mongodb://localhost:27017/chatapp'),
+  MONGODB_MAX_POOL_SIZE: z.coerce.number().int().min(5).max(500).default(100),
+  MONGODB_MIN_POOL_SIZE: z.coerce.number().int().min(0).max(100).default(10),
+  MONGODB_SOCKET_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(10000),
   MONGODB_FALLBACK_TO_MEMORY: z
     .string()
     .optional()
@@ -35,15 +38,17 @@ const envSchema = z.object({
   JWT_ACCESS_SECRET: z.string().min(32).default(DEFAULT_ACCESS_SECRET),
   JWT_REFRESH_SECRET: z.string().min(32).default(DEFAULT_REFRESH_SECRET),
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
-  JWT_REFRESH_EXPIRES_IN: z.string().default('30d'),
+  JWT_REFRESH_EXPIRES_IN: z.string().trim().min(1).default('never'),
   JWT_ISSUER: z.string().min(2).default('chatapp'),
   AUTH_SESSION_MAX_ACTIVE: z.coerce.number().int().min(1).max(20).default(5),
   BCRYPT_ROUNDS: z.coerce.number().int().min(8).max(16).default(10),
   WEBRTC_ICE_SERVERS: z.string().optional(),
   CALL_RING_TIMEOUT_SECONDS: z.coerce.number().int().min(10).max(180).default(45),
+  TEST_OTP_CODE: z.string().trim().min(4).max(8).optional(),
   SOCKET_CONNECTION_RECOVERY_MS: z.coerce.number().int().min(10000).max(300000).default(120000),
   SOCKET_PRESENCE_TTL_SECONDS: z.coerce.number().int().min(30).max(300).default(75),
   SOCKET_PRESENCE_HEARTBEAT_INTERVAL_SECONDS: z.coerce.number().int().min(10).max(120).default(25),
+  PRESENCE_ROOM_CACHE_TTL_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
   SOCKET_JOIN_ALL_BATCH_SIZE: z.coerce.number().int().min(50).max(5000).default(500),
   SOCKET_MAX_HTTP_BUFFER_SIZE: z.coerce.number().int().min(1024).max(20 * 1024 * 1024).default(1_000_000),
   READ_RECEIPT_BATCH_SIZE: z.coerce.number().int().min(50).max(5000).default(500),
@@ -82,6 +87,14 @@ const envSchema = z.object({
         code: z.ZodIssueCode.custom,
         message: 'MONGODB_FALLBACK_TO_MEMORY must be disabled in production',
         path: ['MONGODB_FALLBACK_TO_MEMORY'],
+      });
+    }
+
+    if (!data.REDIS_REQUIRED) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'REDIS_REQUIRED must be enabled in production for distributed sockets, caches, and queues',
+        path: ['REDIS_REQUIRED'],
       });
     }
 
